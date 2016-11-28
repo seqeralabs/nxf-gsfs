@@ -22,6 +22,7 @@ import java.nio.file.FileAlreadyExistsException
 import java.nio.file.FileStore
 import java.nio.file.FileSystem
 import java.nio.file.FileSystemAlreadyExistsException
+import java.nio.file.FileSystemNotFoundException
 import java.nio.file.LinkOption
 import java.nio.file.NoSuchFileException
 import java.nio.file.OpenOption
@@ -32,6 +33,7 @@ import java.nio.file.attribute.FileAttribute
 import java.nio.file.attribute.FileAttributeView
 import java.nio.file.spi.FileSystemProvider
 
+import com.google.auth.oauth2.UserCredentials
 import com.google.cloud.ReadChannel
 import com.google.cloud.storage.Blob
 import com.google.cloud.storage.BlobId
@@ -40,6 +42,7 @@ import com.google.cloud.storage.BucketInfo
 import com.google.cloud.storage.Storage
 import com.google.cloud.storage.StorageBatch
 import com.google.cloud.storage.StorageException
+import com.google.cloud.storage.StorageOptions
 import groovy.transform.CompileStatic
 import groovy.transform.PackageScope
 
@@ -47,7 +50,7 @@ import groovy.transform.PackageScope
  * JSR-203 file system provider implementation for Google Cloud Storage
  *
  * See
- *  http://googlecloudplatform.github.io/google-cloud-java/0.3.0/index.html
+ *  http://googlecloudplatform.github.io/google-cloud-java
  *  https://github.com/GoogleCloudPlatform/google-cloud-java#google-cloud-storage
  *
  * Examples
@@ -58,9 +61,9 @@ import groovy.transform.PackageScope
 @CompileStatic
 class GsFileSystemProvider extends FileSystemProvider {
 
-    public static String SCHEME = 'gs'
+    public final static String SCHEME = 'gs'
 
-    private GsFileSystem fs
+    private Map<String,GsFileSystem> fileSystems = [:]
 
     @PackageScope
     static GsFileSystemProvider create(File credentials, String projectId) {
@@ -83,67 +86,192 @@ class GsFileSystemProvider extends FileSystemProvider {
         throw new IllegalArgumentException("Not a valid Google Storage path object: `$path` [${path?.class?.name?:'-'}]" )
     }
 
+    private String getBucket(URI uri) {
+        assert uri
+        assert uri.scheme
+        assert uri.authority
+
+        if( uri.scheme.toLowerCase() != SCHEME )
+            throw new IllegalArgumentException("Mismatch provider URI scheme: `$scheme`")
+
+        return uri.authority.toLowerCase()
+    }
+
+    private Storage createStorage(File credentials, String projectId ) {
+        StorageOptions
+                .newBuilder()
+                .setCredentials(UserCredentials.fromStream(new FileInputStream(credentials)))
+                .setProjectId(projectId)
+                .build()
+                .getService()
+    }
+
 
     /**
-     * @inheritDoc
+     * Constructs a new {@code FileSystem} object identified by a URI. This
+     * method is invoked by the {@link java.nio.file.FileSystems#newFileSystem(URI,Map)}
+     * method to open a new file system identified by a URI.
+     *
+     * <p> The {@code uri} parameter is an absolute, hierarchical URI, with a
+     * scheme equal (without regard to case) to the scheme supported by this
+     * provider. The exact form of the URI is highly provider dependent. The
+     * {@code env} parameter is a map of provider specific properties to configure
+     * the file system.
+     *
+     * <p> This method throws {@link FileSystemAlreadyExistsException} if the
+     * file system already exists because it was previously created by an
+     * invocation of this method. Once a file system is {@link
+     * java.nio.file.FileSystem#close closed} it is provider-dependent if the
+     * provider allows a new file system to be created with the same URI as a
+     * file system it previously created.
+     *
+     * @param   uri
+     *          URI reference
+     * @param   env
+     *          A map of provider specific properties to configure the file system;
+     *          may be empty
+     *
+     * @return  A new file system
+     *
+     * @throws  IllegalArgumentException
+     *          If the pre-conditions for the {@code uri} parameter aren't met,
+     *          or the {@code env} parameter does not contain properties required
+     *          by the provider, or a property value is invalid
+     * @throws  IOException
+     *          An I/O error occurs creating the file system
+     * @throws  SecurityException
+     *          If a security manager is installed and it denies an unspecified
+     *          permission required by the file system provider implementation
+     * @throws  FileSystemAlreadyExistsException
+     *          If the file system has already been created
      */
     @Override
-    synchronized FileSystem newFileSystem(URI uri, Map<String, ?> env) throws IOException {
-        if( fs )
-            throw new FileSystemAlreadyExistsException()
+    synchronized GsFileSystem newFileSystem(URI uri, Map<String, ?> env) throws IOException {
+        final bucket = getBucket(uri)
+
+        if( fileSystems.containsKey(bucket) )
+            throw new FileSystemAlreadyExistsException("File system already exists for Google Storage bucket: `$bucket`")
 
         def credentials = (File)env.get('credentials')
         def projectId = (String)env.get('projectId')
-        if( credentials && projectId )
-            return fs = new GsFileSystem(this, credentials, projectId)
+        if( credentials && projectId ) {
+            def storage = createStorage(credentials, projectId)
+            def result = new GsFileSystem(this, storage, bucket)
+            fileSystems[bucket] = result
+            return result
+        }
 
         // -- look-up config settings in the environment variables
         credentials = (String)env.get('GOOGLE_APPLICATION_CREDENTIALS')
         projectId = (String)env.get('GOOGLE_PROJECT_ID')
 
-        if( credentials && projectId )
-            return fs = new GsFileSystem(this, new File(credentials), projectId)
+        if( credentials && projectId ) {
+            def storage = createStorage(new File(credentials), projectId)
+            def result = new GsFileSystem(this, storage, bucket)
+            fileSystems[bucket] = result
+            return result
+        }
 
-        if( !credentials ) throw new IllegalStateException("Missing Google Cloud credentials file")
-        throw new IllegalStateException("Missing Google Cloud project ID")
+        // -- fallback on default configuration
+        def storage = StorageOptions.getDefaultInstance().getService()
+        def result = new GsFileSystem(this, storage, bucket)
+        fileSystems[bucket] = result
+        return result
     }
 
-
+    /**
+     * Returns an existing {@code FileSystem} created by this provider.
+     *
+     * <p> This method returns a reference to a {@code FileSystem} that was
+     * created by invoking the {@link #newFileSystem(URI,Map) newFileSystem(URI,Map)}
+     * method. File systems created the {@link #newFileSystem(Path,Map)
+     * newFileSystem(Path,Map)} method are not returned by this method.
+     * The file system is identified by its {@code URI}. Its exact form
+     * is highly provider dependent. In the case of the default provider the URI's
+     * path component is {@code "/"} and the authority, query and fragment components
+     * are undefined (Undefined components are represented by {@code null}).
+     *
+     * <p> Once a file system created by this provider is {@link
+     * java.nio.file.FileSystem#close closed} it is provider-dependent if this
+     * method returns a reference to the closed file system or throws {@link
+     * java.nio.file.FileSystemNotFoundException}. If the provider allows a new file system to
+     * be created with the same URI as a file system it previously created then
+     * this method throws the exception if invoked after the file system is
+     * closed (and before a new instance is created by the {@link #newFileSystem
+     * newFileSystem} method).
+     *
+     * @param   uri
+     *          URI reference
+     *
+     * @return  The file system
+     *
+     * @throws  IllegalArgumentException
+     *          If the pre-conditions for the {@code uri} parameter aren't met
+     * @throws  java.nio.file.FileSystemNotFoundException
+     *          If the file system does not exist
+     * @throws  SecurityException
+     *          If a security manager is installed and it denies an unspecified
+     *          permission.
+     */
     @Override
     FileSystem getFileSystem(URI uri) {
+        getFileSystem0(uri,false)
+    }
+
+    private GsFileSystem getFileSystem0(URI uri, boolean canCreate) {
+        final bucket = getBucket(uri)
+
+        def fs = fileSystems.get(bucket)
+        if( !fs ) {
+            if( canCreate )
+                fs = newFileSystem(uri, System.getenv())
+            else
+                throw new FileSystemNotFoundException("Missing Google Storage file system for bucket: `$bucket`")
+        }
+
         return fs
     }
 
+    /**
+     * Return a {@code Path} object by converting the given {@link URI}. The
+     * resulting {@code Path} is associated with a {@link FileSystem} that
+     * already exists or is constructed automatically.
+     *
+     * <p> The exact form of the URI is file system provider dependent. In the
+     * case of the default provider, the URI scheme is {@code "file"} and the
+     * given URI has a non-empty path component, and undefined query, and
+     * fragment components. The resulting {@code Path} is associated with the
+     * default {@link java.nio.file.FileSystems#getDefault default} {@code FileSystem}.
+     *
+     * @param   uri
+     *          The URI to convert
+     *
+     * @return  The resulting {@code Path}
+     *
+     * @throws  IllegalArgumentException
+     *          If the URI scheme does not identify this provider or other
+     *          preconditions on the uri parameter do not hold
+     * @throws  java.nio.file.FileSystemNotFoundException
+     *          The file system, identified by the URI, does not exist and
+     *          cannot be created automatically
+     * @throws  SecurityException
+     *          If a security manager is installed and it denies an unspecified
+     *          permission.
+     */
     @Override
     Path getPath(URI uri) {
-        if( uri.scheme != SCHEME )
-            throw new IllegalArgumentException("Not a valid Google Storage URI scheme: ${uri.scheme}")
+        final fs = getFileSystem0(uri,true)
 
-        if( fs == null )
-            throw new IllegalStateException("Google Storage file system was not created")
-
-        def bucket = uri.authority
         def object = uri.path
         while( object.startsWith('/') )
             object = object.substring(1)
 
-        return fs.getPath(bucket, object)
+        return fs.getPath(object)
     }
 
-
-    GsPath getPath( String path ) {
-        assert path.startsWith('/')
-        def p = path.substring(1).indexOf('/')
-        if( p == -1 ) {
-            return new GsPath(fs, path.substring(1))
-        }
-        else {
-            return new GsPath(fs, path.substring(1,p+1), path.substring(p+2))
-        }
-    }
 
     static private FileSystemProvider provider( Path path ) {
-        path.fileSystem.provider()
+        path.getFileSystem().provider()
     }
 
     static private Storage storage( Path path ) {
@@ -332,7 +460,7 @@ class GsFileSystemProvider extends FileSystemProvider {
             storage.create(info)
         }
         else {
-            path.isDirectory = true
+            path.directory = true
             final blobId = BlobId.of(path.bucketName, path.objectName)
             final info = BlobInfo.builder(blobId).build()
             storage.create(info)

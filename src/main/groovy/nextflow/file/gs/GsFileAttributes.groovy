@@ -28,15 +28,15 @@ class GsFileAttributes implements BasicFileAttributes {
     private objectId
 
     GsFileAttributes( Blob blob ) {
-        objectId = blob.blobId()
+        objectId = blob.getBlobId()
         // creation
-        creationTime = time(blob.createTime())
+        creationTime = time(blob.getCreateTime())
         // update
-        updateTime = time(blob.updateTime())
+        updateTime = time(blob.getUpdateTime())
         // is dir
-        isDir = blob.name().endsWith('/')
+        isDir = blob.getName().endsWith('/')
         // size
-        size = blob.size()
+        size = blob.getSize()
     }
 
     static private FileTime time(Long millis) {
@@ -44,8 +44,8 @@ class GsFileAttributes implements BasicFileAttributes {
     }
 
     GsFileAttributes( BucketInfo info ) {
-        objectId = info.generatedId()
-        creationTime = time(info.createTime())
+        objectId = info.getGeneratedId()
+        creationTime = time(info.getCreateTime())
         updateTime = null
         isDir = true
         size = 0

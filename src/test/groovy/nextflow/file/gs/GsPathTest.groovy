@@ -1,74 +1,90 @@
 package nextflow.file.gs
 
+import java.nio.file.Paths
+
 import com.google.cloud.storage.Blob
 import spock.lang.Specification
-
+import spock.lang.Unroll
 /**
  *
  * @author Paolo Di Tommaso <paolo.ditommaso@gmail.com>
  */
 class GsPathTest extends Specification {
 
-    def 'should create a path' () {
+    private Map<String,GsFileSystem> fileSystems
 
-        given:
-        def fs = Mock(GsFileSystem)
-        def path
+    def setup() {
+        fileSystems = [:]
+    }
 
-        when:
-        path = new GsPath(fs,'nxf-bucket')
-        then:
-        path.bucketName == 'nxf-bucket'
-        path.objectName == null
-        path.fileName == new GsPath(fs,null,'nxf-bucket')
-        path.parent == null
+    private fsmock(String bucket) {
+        def fs = fileSystems.get(bucket)
+        if( !fs ) {
+            fs = Mock(GsFileSystem)
+            fs.getBucket() >> "/$bucket".toString()
 
-        when:
-        path = new GsPath(fs,'nxf-bucket', 'some/path/name.txt')
-        then:
-        path.bucketName == 'nxf-bucket'
-        path.objectName == 'some/path/name.txt'
-        path.fileName == new GsPath(fs, null, 'name.txt')
-        path.parent == new GsPath(fs,'nxf-bucket','some/path')
+            def provider = Mock(GsFileSystemProvider)
+            provider.getPath(_) >> { URI uri->
+                def b=uri.authority;
+                new GsPath(fsmock(b), Paths.get("/$b/${uri.path}"))
+            }
+            fs.provider() >> provider
 
-        when:
-        path = new GsPath(fs,'nxf-bucket', '/some/path/name.txt')
-        then:
-        path.bucketName == 'nxf-bucket'
-        path.objectName == 'some/path/name.txt'
-        path.fileName == new GsPath(fs, null, 'name.txt')
-        path.parent == new GsPath(fs,'nxf-bucket','some/path/')
+            fileSystems[bucket] = fs
+        }
+        return fs
+    }
 
-        when:
-        path = new GsPath(fs, null, 'file-name.txt')
-        then:
-        path.bucketName == null
-        path.objectName == 'file-name.txt'
-        path.fileName == new GsPath(fs, null, 'file-name.txt')
-        path.parent == null
+    private GsPath getPath(String str) {
+        def path = Paths.get(str)
+        def bucket = path.getName(0).toString()
 
-        when:
-        new GsPath(fs,'/nxf-bucket')
-        then:
-        thrown(IllegalArgumentException)
-
-        when:
-        new GsPath(fs, null, null)
-        then:
-        thrown(IllegalArgumentException)
+        if( path.isAbsolute() ) {
+            return new GsPath(fsmock(bucket), path)
+        }
+        else {
+            return new GsPath(fsmock(""), path)
+        }
 
     }
 
-    def 'should validate blob constructor and cached attributes' () {
+    @Unroll
+    def 'should create a path: #objectName'() {
+
         given:
         def fs = Mock(GsFileSystem)
-        def blob = Mock(Blob)
-        blob.bucket() >> 'alpha'
-        blob.name() >> 'beta/delta'
-        blob.size() >> 100
+        fs.getBucket() >> 'bucket'
 
         when:
-        def path = new GsPath(fs,blob)
+        def path = new GsPath(fs, (String)objectName)
+        then:
+        path.toString() == expected
+        path.directory == dir
+
+        where:
+        objectName              | expected              | dir
+        'file.txt'              | '/bucket/file.txt'    | false
+        '/file.txt'             | '/bucket/file.txt'    | false
+        '/file.txt'             | '/bucket/file.txt'    | false
+        '/a/b/c'                | '/bucket/a/b/c'       | false
+        '/a/b/c/'               | '/bucket/a/b/c'       | true
+        null                    | '/bucket'             | true
+        ''                      | '/bucket'             | true
+        '/'                     | '/bucket'             | true
+
+    }
+
+    def 'should validate blob constructor and cached attributes'() {
+        given:
+        def fs = Mock(GsFileSystem)
+        fs.getBucket() >> 'alpha'
+        def blob = Mock(Blob)
+        blob.getBucket() >> 'alpha'
+        blob.getName() >> 'beta/delta'
+        blob.getSize() >> 100
+
+        when:
+        def path = new GsPath(fs, blob)
         then:
         path.bucketName == 'alpha'
         path.objectName == 'beta/delta'
@@ -82,31 +98,35 @@ class GsPathTest extends Specification {
         path.attributesCache() == null
     }
 
-    def 'should validate equals and hashCode' () {
-
-        given:
-        def fs = Mock(GsFileSystem)
+    def 'should validate equals and hashCode'() {
 
         when:
-        def path1 = new GsPath(fs,'nxf-bucket', 'some/file-name.txt')
-        def path2 = new GsPath(fs,'nxf-bucket', 'some/file-name.txt')
-        def path3 = new GsPath(fs,'nxf-bucket', 'other/file-name.txt')
+        def path1 = getPath('/bucket/some/file-name.txt')
+        def path2 = getPath('/bucket/some/file-name.txt')
+        def path3 = getPath('/bucket/other/file-name.txt')
+        def path4 = getPath('/bucket2/some/file-name.txt')
 
         then:
         path1 == path2
         path1 != path3
+        path1 != path4
 
         path1.hashCode() == path2.hashCode()
         path1.hashCode() != path3.hashCode()
-    }
-
-    def 'should validate isAbsolute' () {
-        given:
-        def fs = Mock(GsFileSystem)
 
         when:
-        def path1 = new GsPath(fs,'nxf-bucket', 'some/file-name.txt')
-        def path2 = new GsPath(fs, null, 'file-name.txt')
+        def rel1 = getPath('file.txt')
+        def rel2 = getPath('file.txt')
+        then:
+        rel1 == rel2
+        rel1.hashCode() == rel2.hashCode()
+    }
+
+    def 'should validate isAbsolute'() {
+
+        when:
+        def path1 = getPath('/some/file-name.txt')
+        def path2 = getPath('file-name.txt')
 
         then:
         path1.isAbsolute()
@@ -114,117 +134,201 @@ class GsPathTest extends Specification {
 
     }
 
-    def 'should validate getRoot' () {
-        given:
-        def fs = Mock(GsFileSystem)
-
+    def 'should validate getRoot'() {
         when:
-        def path1 = new GsPath(fs,'nxf-bucket', 'some/file-name.txt')
-        def path2 = new GsPath(fs, null, 'file-name.txt')
+        def path1 = getPath('/bucket/some/file-name.txt')
+        def path2 = getPath('file-name.txt')
 
         then:
-        path1.root == new GsPath(fs,'nxf-bucket')
+        path1.root == getPath('/bucket')
+        path1.root.toString() == '/bucket'
         path2.root == null
 
     }
 
-    def 'should validate getFileName' () {
-
-        given:
-        def fs = Mock(GsFileSystem)
-
-        when:
-        def path1 = new GsPath(fs,'nxf-bucket', 'some/file-name.txt')
-        then:
-        path1.getFileName() == new GsPath(fs,null,'file-name.txt')
-
-        when:
-        def path2 = new GsPath(fs, null, 'file-name.txt')
-        then:
-        path2.getFileName() == new GsPath(fs,null,'file-name.txt')
-
-        when:
-        def path3 = new GsPath(fs, 'nxf-bucket', 'file-name.txt')
-        then:
-        path3.getFileName() == new GsPath(fs,null,'file-name.txt')
-
-        when:
-        def path4 = new GsPath(fs, 'nxf-bucket')
-        then:
-        path4.getFileName() == null
-
-    }
-
-
-    def 'should validate getParent' () {
-
-        given:
-        def fs = Mock(GsFileSystem)
-
-        when:
-        def path1 = new GsPath(fs,'nxf-bucket', 'some/data/file-name.txt')
-        then:
-        path1.getParent() == new GsPath(fs,'nxf-bucket','some/data')
-
-        when:
-        def path2 = new GsPath(fs, 'nxf-bucket', 'file-name.txt')
-        then:
-        path2.getParent() == new GsPath(fs,'nxf-bucket')
-
-        when:
-        def path3 = new GsPath(fs, null, 'file-name.txt')
-        then:
-        path3.getParent() == null
-
-        when:
-        def path4 = new GsPath(fs, 'nxf-bucket')
-        then:
-        path4.getParent() == null
-
-    }
-
-
-    def 'should validate toUru' () {
-
-        given:
-        def fs = Mock(GsFileSystem)
+    @Unroll
+    def 'should validate getFileName'() {
 
         expect:
-        new GsPath(fs, 'alpha', 'some/file.txt').toUri() == new URI('gs://alpha/some/file.txt')
-        new GsPath(fs, 'alpha' ).toUri() == new URI('gs://alpha')
-        new GsPath(fs, null, 'some-file.txt' ).toUri() == new URI('gs:some-file.txt')
+        getPath(path).getFileName() == getPath(fileName)
+
+        where:
+        path                                    | fileName
+        '/nxf-bucket/file-name.txt'             | 'file-name.txt'
+        '/nxf-bucket/some/data/file-name.txt'   | 'file-name.txt'
+        'file-name.txt'                         | 'file-name.txt'
+        '/nxf-bucket'                           | 'nxf-bucket'
+
     }
 
-    def testURI() {
+
+    @Unroll
+    def 'should validate getParent: #path'() {
 
         expect:
-        new URI('gs:some-file.txt').toString() == 'gs:some-file.txt'
+        getPath(path).getParent() == (parent ? getPath(parent) : null)
+
+        where:
+        path                                    | parent
+        '/nxf-bucket/some/data/file-name.txt'   | '/nxf-bucket/some/data'
+        '/nxf-bucket/file-name.txt'             | '/nxf-bucket'
+        'file-name.txt'                         | null
+        '/nxf-bucket'                           | null
+    }
+
+    @Unroll
+    def 'should validate toUri'() {
+
+        expect:
+        getPath(path).toUri() == new URI(uri)
+
+        where:
+        path                            | uri
+        '/alpha/some/file.txt'          | 'gs://alpha/some/file.txt'
+        '/alpha/'                       | 'gs://alpha'
+        '/alpha'                        | 'gs://alpha'
+        'some-file.txt'                 | 'gs:some-file.txt'
+    }
+
+
+    @Unroll
+    def 'should validate toString: #path'() {
+
+        expect:
+        getPath(path).toString() == str
+
+        where:
+        path                    | str
+        '/alpha/some/file.txt'  | '/alpha/some/file.txt'
+        '/alpha'                | '/alpha'
+        '/alpha/'               | '/alpha'
+        'some-file.txt'         | 'some-file.txt'
+    }
+
+    @Unroll
+    def 'should validate resolve: base:=#base; path=#path'() {
+
+        expect:
+        getPath(base).resolve(path) == getPath(expected)
+        getPath(base).resolve(getPath(path)) == getPath(expected)
+
+        where:
+        base                        | path                          | expected
+        '/nxf-bucket/some/path'     | 'file-name.txt'               | '/nxf-bucket/some/path/file-name.txt'
+        '/nxf-bucket/data'          | 'path/file-name.txt'          | '/nxf-bucket/data/path/file-name.txt'
+        '/nxf-bucket/data'          | '/other/file-name.txt'        | '/other/file-name.txt'
+        '/nxf-bucket'               | 'some/file-name.txt'          | '/nxf-bucket/some/file-name.txt'
+    }
+
+    @Unroll
+    def 'should validate subpath: #expected'() {
+        expect:
+        getPath(path).subpath(from, to) == getPath(expected)
+        where:
+        path                                | from  | to    | expected
+        '/bucket/some/big/data/file.txt'    | 0     | 2     | 'bucket/some'
+        '/bucket/some/big/data/file.txt'    | 1     | 2     | 'some'
+        '/bucket/some/big/data/file.txt'    | 4     | 5     | 'file.txt'
+    }
+
+    @Unroll
+    def 'should validate startsWith'() {
+        expect:
+        getPath(path).startsWith(prefix) == expected
+        getPath(path).startsWith(getPath(prefix)) == expected
+        where:
+        path                            | prefix            | expected
+        '/bucket/some/data/file.txt'    | '/bucket/some'    | true
+        '/bucket/some/data/file.txt'    | '/bucket/'        | true
+        '/bucket/some/data/file.txt'    | '/bucket'         | true
+        '/bucket/some/data/file.txt'    | 'file.txt'        | false
+        'data/file.txt'                 | 'data'            | true
+        'data/file.txt'                 | 'file.txt'        | false
+
+    }
+
+    def 'should validate endsWith'() {
+        expect:
+        getPath(path).endsWith(suffix) == expected
+        getPath(path).endsWith(getPath(suffix)) == expected
+        where:
+        path                            | suffix            | expected
+        '/bucket/some/data/file.txt'    | 'file.txt'        | true
+        '/bucket/some/data/file.txt'    | 'data/file.txt'   | true
+        '/bucket/some/data/file.txt'    | '/data/file.txt'  | false
+        '/bucket/some/data/file.txt'    | '/bucket'         | false
+        'data/file.txt'                 | 'data'            | false
+        'data/file.txt'                 | 'file.txt'        | true
 
     }
 
 
-    def 'should validate toString' () {
+    def 'should validate normalise'() {
+        expect:
+        getPath(path).normalize() == getPath(expected)
+        where:
+        path                            | expected
+        '/bucket/some/data/file.txt'    | '/bucket/some/data/file.txt'
+        '/bucket/some/../file.txt'      | '/bucket/file.txt'
+        'bucket/some/../file.txt'       | 'bucket/file.txt'
+        'file.txt'                       | 'file.txt'
 
+    }
+
+    @Unroll
+    def 'should validate resolveSibling' () {
+        expect:
+        getPath(base).resolveSibling(path) == getPath(expected)
+        getPath(base).resolveSibling(getPath(path)) == getPath(expected)
+
+        where:
+        base                        | path                          | expected
+        '/nxf-bucket/some/path'     | 'file-name.txt'               | '/nxf-bucket/some/file-name.txt'
+        '/nxf-bucket/data'          | 'path/file-name.txt'          | '/nxf-bucket/path/file-name.txt'
+        '/nxf-bucket/data'          | '/other/file-name.txt'        | '/other/file-name.txt'
+        '/nxf-bucket'               | 'some/file-name.txt'          | '/some/file-name.txt'
+    }
+
+    @Unroll
+    def 'should validate relativize' () {
+        expect:
+        getPath(path).relativize(getPath(other)) == getPath(expected)
+        where:
+        path                    | other                                 | expected
+        '/nxf-bucket/some/path' | '/nxf-bucket/some/path/data/file.txt' | 'data/file.txt'
+    }
+
+    def 'should validate toAbsolutePath' () {
+        expect:
+        getPath('/bucket/data/file.txt').toAbsolutePath() == getPath('/bucket/data/file.txt')
+
+        when:
+        getPath('file.txt').toAbsolutePath()
+        then:
+        thrown(UnsupportedOperationException)
+    }
+
+    def 'should validate toRealPath' () {
+        expect:
+        getPath('/bucket/data/file.txt').toRealPath() == getPath('/bucket/data/file.txt')
+
+        when:
+        getPath('file.txt').toRealPath()
+        then:
+        thrown(UnsupportedOperationException)
+    }
+
+    def 'should validate iterator' () {
         given:
-        def fs = Mock(GsFileSystem)
-
+        def itr = getPath('/nxf-bucket/some/file-name.txt').iterator()
         expect:
-        new GsPath(fs, 'alpha', 'some/file.txt').toString() == '/alpha/some/file.txt'
-        new GsPath(fs, 'alpha' ).toString() == '/alpha'
-        new GsPath(fs, null, 'some-file.txt' ).toString() == 'some-file.txt'
+        itr.hasNext()
+        itr.next() == getPath('nxf-bucket')
+        itr.hasNext()
+        itr.next() == getPath('some')
+        itr.hasNext()
+        itr.next() == getPath('file-name.txt')
+        !itr.hasNext()
+
     }
-
-    def 'should validate resolve' () {
-
-        given:
-        def fs = Mock(GsFileSystem)
-
-        expect:
-        new GsPath(fs,'bucket','some/path').resolve('file-name.txt').toString() == '/bucket/some/path/file-name.txt'
-        new GsPath(fs,'bucket','data').resolve('path/file-name.txt').toString() == '/bucket/data/path/file-name.txt'
-        new GsPath(fs,'bucket','data').resolve('/path/file-name.txt').toString() == '/bucket/path/file-name.txt'
-        new GsPath(fs,'bucket').resolve('some/file-name.txt').toString() == '/bucket/some/file-name.txt'
-        new GsPath(fs,'bucket').resolve('/some/file-name.txt').toString() == '/bucket/some/file-name.txt'
-    }
-
 }

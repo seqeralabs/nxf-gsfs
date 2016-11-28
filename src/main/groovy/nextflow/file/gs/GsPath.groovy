@@ -2,6 +2,8 @@ package nextflow.file.gs
 
 import java.nio.file.LinkOption
 import java.nio.file.Path
+import java.nio.file.Paths
+import java.nio.file.ProviderMismatchException
 import java.nio.file.WatchEvent
 import java.nio.file.WatchKey
 import java.nio.file.WatchService
@@ -13,43 +15,42 @@ import groovy.transform.EqualsAndHashCode
 import groovy.transform.PackageScope
 
 /**
+ * Model a Google Storage path
  *
  * @author Paolo Di Tommaso <paolo.ditommaso@gmail.com>
  */
-@EqualsAndHashCode(includes = 'fs,bucket,parts', includeFields = true)
+@EqualsAndHashCode(includes = 'fs,path', includeFields = true)
 @CompileStatic
 class GsPath implements Path {
 
     private GsFileSystem fs
 
+    private Path path
+
     private GsFileAttributes attributes
 
-    private String bucketName
-
-    private List<String> parts
-
     @PackageScope
-    boolean isDirectory
+    boolean directory
 
-    GsPath( GsFileSystem fs, String bucket, String objectName=null ) {
-        assert fs, "GsPath file system cannot be null"
+    GsPath( GsFileSystem fs, String objectName ) {
+        assert fs, "File system cannot be null"
         this.fs = fs
-        this.bucketName = bucket
-        this.isDirectory = objectName==null || objectName.endsWith("/")
-
-        if( bucket ) {
-            if( bucket.contains('/') ) throw new IllegalArgumentException("Not a valid bucket name: `$bucket`")
-        }
-        else {
-            if( !objectName ) throw new IllegalArgumentException("Path name cannot be empty")
-        }
-
-        this.parts = objectName ? objectName.tokenize('/') : new ArrayList<String>()
+        this.directory = !objectName || objectName.endsWith("/")
+        this.path = objectName ? Paths.get("/${fs.bucket}", objectName) : Paths.get("/${fs.bucket}")
     }
 
-    GsPath( GsFileSystem fs, Blob blob ) {
-        this(fs, blob.bucket(), blob.name())
+    GsPath(GsFileSystem fs, Blob blob ) {
+        this(fs, blob.getName())
         this.attributes = new GsFileAttributes(blob)
+        if( fs.getBucket() != blob.getBucket() )
+            throw new IllegalArgumentException("Blob bucket does not match")
+    }
+
+    @PackageScope
+    GsPath( GsFileSystem fs, Path path, boolean directory = false) {
+        this.fs = fs
+        this.path = path
+        this.directory = directory
     }
 
     @Override
@@ -59,124 +60,128 @@ class GsPath implements Path {
 
     @Override
     boolean isAbsolute() {
-        return bucketName != null
+        path.isAbsolute()
     }
 
     @Override
     Path getRoot() {
-        return bucketName ? new GsPath(fs, bucketName) : null
+        path.isAbsolute() ? new GsPath(fs, "/") : null
     }
 
     @Override
     Path getFileName() {
-        parts ? new GsPath(fs, null, parts[-1]) : new GsPath(fs,null,bucketName)
+        final name = path.getFileName()
+        name ? new GsPath(fs, name, directory) : null
     }
 
     @Override
     Path getParent() {
-        if( !objectName )
-            return null
-        if( parts.size()==1 )
-            return bucketName ? new GsPath(fs, bucketName) : null
-        else
-            return new GsPath(fs, bucketName, parts[0..-2].join('/') + '/')
+        if( path.isAbsolute() && path.nameCount>1 ) {
+            new GsPath(fs, path.parent, true)
+        }
+        else {
+            null
+        }
     }
 
     @Override
     int getNameCount() {
-        parts ? parts.size()+1 : 1
+        path.getNameCount()
     }
 
     @Override
     Path getName(int index) {
-        if( index==0 )
-            return new GsPath(fs,bucketName)
-
-        def len = parts.size()
-        if( index<len )
-            return new GsPath(fs,null, parts.get(index))
-        else
-            throw new IllegalArgumentException("Not a valid path name index: $index -- path: ${toString()}" )
+        final dir = index < path.getNameCount()-1
+        new GsPath(fs, path.getName(index), dir)
     }
 
     @Override
     Path subpath(int beginIndex, int endIndex) {
-        return null
+        final dir = endIndex < path.getNameCount()-1
+        new GsPath(fs, path.subpath(beginIndex,endIndex), dir)
     }
 
     @Override
     boolean startsWith(Path other) {
-        return false
+        path.startsWith(other.toString())
     }
 
     @Override
     boolean startsWith(String other) {
-        return false
+        path.startsWith(other)
     }
 
     @Override
     boolean endsWith(Path other) {
-        return false
+        path.endsWith(other.toString())
     }
 
     @Override
     boolean endsWith(String other) {
-        return false
+        path.endsWith(other)
     }
 
     @Override
     Path normalize() {
-        return null
+        new GsPath(fs, path.normalize(), directory)
     }
 
     @Override
     GsPath resolve(Path other) {
-        if(this.class != other.class)
-            throw new IllegalArgumentException("File system path types do not match")
-        if(other.isAbsolute())
-            return (GsPath)other
-        String otherName = ((GsPath)other).objectName
-        return otherName ? this.resolve(otherName) : this
+        if( other.class != GsPath )
+            throw new ProviderMismatchException()
+
+        final that = (GsPath)other
+        if( other.isAbsolute() )
+            return that
+
+        def newPath = path.resolve(that.path)
+        new GsPath(fs, newPath, false)
     }
 
     @Override
     GsPath resolve(String other) {
         if( other.startsWith('/') )
-            return new GsPath(fs, bucketName, other.substring(1))
+            return (GsPath)fs.provider().getPath(new URI("$GsFileSystemProvider.SCHEME:/$other"))
 
-        if( !objectName )
-            return new GsPath(fs, bucketName, other)
-
-        return new GsPath(fs, bucketName, "$objectName/$other")
+        def newPath = path.resolve(other)
+        new GsPath(fs, newPath, false)
     }
 
     @Override
     Path resolveSibling(Path other) {
-        return null
+        if( other.class != GsPath )
+            throw new ProviderMismatchException()
+
+        final that = (GsPath)other
+        if( other.isAbsolute() )
+            return that
+
+        def newPath = path.resolveSibling(that.path)
+        new GsPath(fs, newPath, false)
     }
 
     @Override
     Path resolveSibling(String other) {
-        return null
+        if( other.startsWith('/') )
+            return (GsPath)fs.provider().getPath(new URI("$GsFileSystemProvider.SCHEME:/$other"))
+
+        def newPath = path.resolveSibling(other)
+        new GsPath(fs, newPath, false)
     }
 
     @Override
     Path relativize(Path other) {
-        return null
+        if( other.class != GsPath )
+            throw new ProviderMismatchException()
+
+        def newPath = path.relativize( ((GsPath)other).path )
+        new GsPath(fs,newPath,false)
     }
 
     @Override
     String toString() {
-        if( bucketName && parts )
-            return "/$bucketName/${parts.join('/')}"
-
-        if( bucketName )
-            return "/$bucketName"
-
-        if( parts )
-            return parts.join('/')
-
-        throw new IllegalStateException("Not a valid Google Storage path -- Both bucket and name attribute are missing")
+        path.toString()
     }
 
     @Override
@@ -212,11 +217,11 @@ class GsPath implements Path {
 
     @Override
     Iterator<Path> iterator() {
-        List<Path> paths = [ getRoot() ]
-        if( objectName ) {
-            paths.addAll( objectName.tokenize('/').collect { new GsPath(fs,null,it) } )
+        final count = path.nameCount
+        List<Path> paths = new ArrayList<>()
+        for( int i=0; i<count; i++ ) {
+            paths.add(i, new GsPath(fs, path.getName(i), i<count-1))
         }
-
         paths.iterator()
     }
 
@@ -226,17 +231,21 @@ class GsPath implements Path {
     }
 
     String getBucketName() {
-        bucketName
+        path.isAbsolute() ? path.getName(0) : null
     }
 
     boolean isBucket() {
-        bucketName && !objectName
+        path.isAbsolute() && path.nameCount==1
     }
 
     String getObjectName() {
-        if(!parts) return null
-        final result = parts.join('/')
-        isDirectory ? result+'/' : result
+        if( !path.isAbsolute() )
+            return path.toString()
+
+        if( path.nameCount>1 )
+            return path.subpath(1, path.nameCount).toString()
+
+        return null
     }
 
     BlobId getBlobId() {
@@ -244,17 +253,13 @@ class GsPath implements Path {
     }
 
     String toUriString() {
-        def name = getObjectName()
-        if( name && bucketName ) {
-            return "${GsFileSystemProvider.SCHEME}://$bucketName/$name"
+
+        if( path.isAbsolute() ) {
+            return "${GsFileSystemProvider.SCHEME}:/${path.toString()}"
         }
-        else if( bucketName ) {
-            return "${GsFileSystemProvider.SCHEME}://$bucketName"
+        else {
+            return "${GsFileSystemProvider.SCHEME}:${path.toString()}"
         }
-        else if( name ) {
-            return "${GsFileSystemProvider.SCHEME}:$name"
-        }
-        throw new IllegalStateException("Not a valid Google Storage path -- Both bucket and name attribute are missing")
     }
 
     GsFileAttributes attributesCache() {
@@ -263,5 +268,16 @@ class GsPath implements Path {
         return result
     }
 
+//    static GsPath get(String str)  {
+//        if( str == null )
+//            return null
+//
+//        def uri = new URI(null,null,str,null,null)
+//
+//        if( uri.scheme && GsFileSystemProvider.SCHEME != uri.scheme.toLowerCase())
+//            throw new ProviderMismatchException()
+//
+//        uri.authority ? (GsPath)Paths.get(uri) : new GsPath(null, str)
+//    }
 
 }

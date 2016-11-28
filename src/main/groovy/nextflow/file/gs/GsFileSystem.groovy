@@ -7,19 +7,16 @@ import java.nio.file.PathMatcher
 import java.nio.file.WatchService
 import java.nio.file.attribute.UserPrincipalLookupService
 
-import com.google.cloud.AuthCredentials
 import com.google.cloud.storage.Bucket
 import com.google.cloud.storage.Storage
-import com.google.cloud.storage.StorageOptions
 import groovy.transform.CompileDynamic
 import groovy.transform.CompileStatic
 import groovy.transform.PackageScope
 /**
  * JSR-203 file system implementation for Google Cloud Storage
  *
- *
  * See
- *  http://googlecloudplatform.github.io/google-cloud-java/0.3.0/index.html
+ *  http://googlecloudplatform.github.io/google-cloud-java/
  *  https://github.com/GoogleCloudPlatform/google-cloud-java#google-cloud-storage
  *
  * @author Paolo Di Tommaso <paolo.ditommaso@gmail.com>
@@ -31,28 +28,17 @@ class GsFileSystem extends FileSystem {
 
     private Storage storage
 
-    /**
-     * Create a new Google storage file system
-     *
-     * @param provider The {@link GsFileSystemProvider} instance
-     * @param credentials The JSON file holding the Google cloud credentials
-     * @param projectId The Google cloud project id
-     */
-    @PackageScope
-    GsFileSystem( GsFileSystemProvider provider, File credentials, String projectId ) {
-        this.provider = provider
-        this.storage = StorageOptions
-                .builder()
-                .authCredentials(AuthCredentials.createForJson(new FileInputStream(credentials)))
-                .projectId(projectId)
-                .build()
-                .service()
-    }
+    private String bucket
 
     @PackageScope
-    GsFileSystem( GsFileSystemProvider provider, Storage storage ) {
+    GsFileSystem( GsFileSystemProvider provider, Storage storage, String bucket ) {
         this.provider = provider
+        this.bucket = bucket
         this.storage = storage
+    }
+
+    String getBucket() {
+        bucket
     }
 
     @PackageScope
@@ -89,7 +75,7 @@ class GsFileSystem extends FileSystem {
         storage
                 .list()
                 .iterateAll()
-                .collect { Bucket b -> new GsPath(this, b.name()) }
+                .collect { Bucket b -> provider.getPath(new URI("$GsFileSystemProvider.SCHEME://${b.getName()}")) }
     }
 
     @Override
@@ -103,14 +89,26 @@ class GsFileSystem extends FileSystem {
     }
 
     @Override
-    GsPath getPath(String bucket, String... more) {
-        if( !bucket ) throw new IllegalArgumentException("Missing bucket name")
-        return more ? new GsPath(this, bucket, more.join('/')) : new GsPath(this,bucket)
+    GsPath getPath(String first, String... more) {
+        if( more ) {
+            def path = [first]; path.addAll(more)
+            new GsPath(this, path.collect {trimSlash(it)}.join('/'))
+        }
+        else {
+            return new GsPath(this, first)
+        }
+    }
+
+    private String trimSlash(String str) {
+        while( str.startsWith('/') )
+            str = str.substring(1)
+        while( str.endsWith('/') )
+            str = str.substring(0,str.length()-1)
+        return str
     }
 
     @Override
     PathMatcher getPathMatcher(String syntaxAndPattern) {
-        //TODO
         throw new UnsupportedOperationException()
     }
 
@@ -123,18 +121,5 @@ class GsFileSystem extends FileSystem {
     WatchService newWatchService() throws IOException {
         throw new UnsupportedOperationException()
     }
-
-//    @PackageScope
-//    InputStream newInputStream(GsPath path) {
-//        ReadChannel reader = storage.reader(path.blobId)
-//        Channels.newInputStream(reader)
-//    }
-//
-//    OutputStream newOutputStream(GsPath path) {
-//        final blobInfo = BlobInfo.builder(path.blobId).build()
-//        final writer = storage.writer(blobInfo)
-//        Channels.newOutputStream(writer)
-//    }
-
 
 }

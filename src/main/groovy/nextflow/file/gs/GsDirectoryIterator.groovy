@@ -4,6 +4,8 @@ import java.nio.file.DirectoryStream.Filter
 import java.nio.file.Path
 
 import com.google.cloud.storage.Blob
+import groovy.transform.CompileStatic
+
 /**
  * Implements a directory stream iterator
  *
@@ -12,6 +14,7 @@ import com.google.cloud.storage.Blob
  *
  * @author Paolo Di Tommaso <paolo.ditommaso@gmail.com>
  */
+@CompileStatic
 class GsDirectoryIterator implements Iterator<Path> {
 
     private GsFileSystem fs
@@ -36,7 +39,7 @@ class GsDirectoryIterator implements Iterator<Path> {
         GsPath result = null
         while(itr.hasNext() && result == null) {
             def blob = itr.next()
-            def path = new GsPath(fs,blob)
+            def path = new GsPath(fs, blob)
             if( filter ) {
                 result = filter.accept(path) ? path : null
             }
