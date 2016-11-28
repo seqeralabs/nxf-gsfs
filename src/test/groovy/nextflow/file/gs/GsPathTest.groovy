@@ -3,6 +3,7 @@ package nextflow.file.gs
 import java.nio.file.Paths
 
 import com.google.cloud.storage.Blob
+import com.google.cloud.storage.BlobId
 import spock.lang.Specification
 import spock.lang.Unroll
 /**
@@ -144,6 +145,24 @@ class GsPathTest extends Specification {
         path1.root.toString() == '/bucket'
         path2.root == null
 
+    }
+
+    @Unroll
+    def 'should return bucket name and id' () {
+
+        when:
+        def p = getPath(path)
+        then:
+        p.isBucket() == expected
+        p.getBucketName() == bucketName
+        p.getBlobId() == blobId
+
+        where:
+        path                                    | expected  |  bucketName       | blobId
+        '/nxf-bucket/file-name.txt'             | false     | 'nxf-bucket'      | BlobId.of('nxf-bucket', 'file-name.txt')
+        '/nxf-bucket/some/data/file-name.txt'   | false     | 'nxf-bucket'      | BlobId.of('nxf-bucket', 'some/data/file-name.txt')
+        'file-name.txt'                         | false     | null              | null
+        '/nxf-bucket'                           | true      | 'nxf-bucket'      | null
     }
 
     @Unroll

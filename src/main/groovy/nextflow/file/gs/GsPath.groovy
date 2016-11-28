@@ -249,7 +249,7 @@ class GsPath implements Path {
     }
 
     BlobId getBlobId() {
-        BlobId.of(bucketName,getObjectName())
+        path.isAbsolute() && path.nameCount>1 ? BlobId.of(bucketName,getObjectName()) : null
     }
 
     String toUriString() {

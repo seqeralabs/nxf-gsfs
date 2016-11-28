@@ -45,7 +45,6 @@ import com.google.cloud.storage.StorageException
 import com.google.cloud.storage.StorageOptions
 import groovy.transform.CompileStatic
 import groovy.transform.PackageScope
-
 /**
  * JSR-203 file system provider implementation for Google Cloud Storage
  *
@@ -86,10 +85,13 @@ class GsFileSystemProvider extends FileSystemProvider {
         throw new IllegalArgumentException("Not a valid Google Storage path object: `$path` [${path?.class?.name?:'-'}]" )
     }
 
-    private String getBucket(URI uri) {
+    protected String getBucket(URI uri) {
         assert uri
-        assert uri.scheme
-        assert uri.authority
+        if( !uri.scheme )
+            throw new IllegalArgumentException("Missing URI scheme")
+
+        if( !uri.authority )
+            throw new IllegalArgumentException("Missing bucket name")
 
         if( uri.scheme.toLowerCase() != SCHEME )
             throw new IllegalArgumentException("Mismatch provider URI scheme: `$scheme`")
@@ -97,7 +99,7 @@ class GsFileSystemProvider extends FileSystemProvider {
         return uri.authority.toLowerCase()
     }
 
-    private Storage createStorage(File credentials, String projectId ) {
+    protected Storage createStorage(File credentials, String projectId) {
         StorageOptions
                 .newBuilder()
                 .setCredentials(UserCredentials.fromStream(new FileInputStream(credentials)))
@@ -106,6 +108,9 @@ class GsFileSystemProvider extends FileSystemProvider {
                 .getService()
     }
 
+    protected Storage createDefaultStorage() {
+        StorageOptions.getDefaultInstance().getService()
+    }
 
     /**
      * Constructs a new {@code FileSystem} object identified by a URI. This
@@ -173,7 +178,7 @@ class GsFileSystemProvider extends FileSystemProvider {
         }
 
         // -- fallback on default configuration
-        def storage = StorageOptions.getDefaultInstance().getService()
+        def storage = createDefaultStorage()
         def result = new GsFileSystem(this, storage, bucket)
         fileSystems[bucket] = result
         return result
@@ -319,7 +324,7 @@ class GsFileSystemProvider extends FileSystemProvider {
         final Blob blob = storage.get(path.blobId)
         if( !blob ) throw new NoSuchFileException("File does not exist: ${path.toUriString()}")
 
-        final size = blob.size()
+        final size = blob.getSize()
         final ReadChannel reader = storage.reader(path.blobId)
 
         return new SeekableByteChannel() {
@@ -373,7 +378,7 @@ class GsFileSystemProvider extends FileSystemProvider {
 
     protected SeekableByteChannel newWritableByteChannel(GsPath path) {
         final storage = storage(path)
-        final blobInfo = BlobInfo.builder(path.blobId).build()
+        final blobInfo = BlobInfo.newBuilder(path.blobId).build()
         final writer = storage.writer(blobInfo)
 
         return new SeekableByteChannel()  {
@@ -462,7 +467,7 @@ class GsFileSystemProvider extends FileSystemProvider {
         else {
             path.directory = true
             final blobId = BlobId.of(path.bucketName, path.objectName)
-            final info = BlobInfo.builder(blobId).build()
+            final info = BlobInfo.newBuilder(blobId).build()
             storage.create(info)
         }
     }
@@ -474,7 +479,7 @@ class GsFileSystemProvider extends FileSystemProvider {
     void createFile(GsPath path, byte[] content) {
         final storage = storage(path)
         final blobId = BlobId.of(path.bucketName, path.objectName)
-        final info = BlobInfo.builder(blobId).build()
+        final info = BlobInfo.newBuilder(blobId).build()
         storage.create(info, content)
     }
 
@@ -540,9 +545,9 @@ class GsFileSystemProvider extends FileSystemProvider {
         }
 
         def request = CopyRequest
-                        .builder()
-                        .source(source.blobId)
-                        .target(target.blobId)
+                        .newBuilder()
+                        .setSource(source.blobId)
+                        .setTarget(target.blobId)
                         .build();
         def copyWriter = storage(source).copy(request);
         while (!copyWriter.isDone()) {
