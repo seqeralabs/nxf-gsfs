@@ -3,15 +3,20 @@ package nextflow.file.gs
 import java.nio.charset.Charset
 import java.nio.file.DirectoryNotEmptyException
 import java.nio.file.FileAlreadyExistsException
+import java.nio.file.FileVisitResult
 import java.nio.file.Files
 import java.nio.file.NoSuchFileException
+import java.nio.file.Path
 import java.nio.file.Paths
+import java.nio.file.SimpleFileVisitor
 import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
 import java.nio.file.attribute.BasicFileAttributeView
 import java.nio.file.attribute.BasicFileAttributes
 
+import com.google.cloud.storage.Blob
 import com.google.cloud.storage.Storage
+import spock.lang.Ignore
 import spock.lang.Requires
 import spock.lang.Shared
 import spock.lang.Specification
@@ -535,7 +540,107 @@ class GsFilesTest extends Specification implements StorageHelper {
 
     def 'should check walkTree' () {
 
+        given:
+        final bucketName = createBucket()
+        createObject("$bucketName/foo/file1.txt",'A')
+        createObject("$bucketName/foo/file2.txt",'BB')
+        createObject("$bucketName/foo/bar/file3.txt",'CCC')
+        createObject("$bucketName/foo/bar/baz/file4.txt",'DDDD')
+        createObject("$bucketName/foo/bar/file5.txt",'EEEEE')
+        createObject("$bucketName/foo/file6.txt",'FFFFFF')
+
+        when:
+        List<String> dirs = []
+        Map<String,BasicFileAttributes> files = [:]
+        def base = Paths.get(new URI("gs://$bucketName"))
+        Files.walkFileTree(base, new SimpleFileVisitor<Path>() {
+
+            @Override
+            FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException
+            {
+                dirs << base.relativize(dir).toString()
+                return FileVisitResult.CONTINUE;
+            }
+
+            @Override
+            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException
+            {
+                files[file.getFileName().toString()] = attrs
+                return FileVisitResult.CONTINUE;
+            }
+        })
+
+        then:
+        files.size() == 6
+        files ['file1.txt'].size() == 1
+        files ['file2.txt'].size() == 2
+        files ['file3.txt'].size() == 3
+        files ['file4.txt'].size() == 4
+        files ['file5.txt'].size() == 5
+        files ['file6.txt'].size() == 6
+        dirs.size() == 4
+        dirs.contains("")
+        dirs.contains('foo')
+        dirs.contains('foo/bar')
+        dirs.contains('foo/bar/baz')
+
+
+        when:
+        dirs = []
+        files = [:]
+        base = Paths.get(new URI("gs://$bucketName/foo/bar/"))
+        Files.walkFileTree(base, new SimpleFileVisitor<Path>() {
+
+            @Override
+            FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException
+            {
+                dirs << base.relativize(dir).toString()
+                return FileVisitResult.CONTINUE;
+            }
+
+            @Override
+            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException
+            {
+                files[file.getFileName().toString()] = attrs
+                return FileVisitResult.CONTINUE;
+            }
+        })
+
+        then:
+        println files
+        files.size()==3
+        files.containsKey('file3.txt')
+        files.containsKey('file4.txt')
+        files.containsKey('file5.txt')
+        dirs.size() == 2
+        dirs.contains("")
+        dirs.contains('baz')
+
+        cleanup:
+        deleteBucket(bucketName)
     }
 
+    @Ignore
+    def 'test list dirs' () {
+        given:
+        final bucketName = createBucket()
+        createObject("$bucketName/foo/file1.txt",'A')
+        createObject("$bucketName/foo/file2.txt",'BB')
+        createObject("$bucketName/foo/bar/file3.txt",'CCC')
+        createObject("$bucketName/foo/bar/baz/file4.txt",'DDDD')
+        createObject("$bucketName/foo/bar/file5.txt",'EEEEE')
+        createObject("$bucketName/foo/file6.txt",'FFFFFF')
+
+        when:
+        def opts = [Storage.BlobListOption.currentDirectory()]
+        opts << Storage.BlobListOption.prefix('foo/bar')
+        def values = storage.list(bucketName, opts as Storage.BlobListOption[]).getValues()
+        values.each { Blob it -> println "${it.name}; dir=${it.directory}" }
+        then:
+        true
+
+        cleanup:
+        deleteBucket(bucketName)
+    }
 
 }

@@ -1,4 +1,5 @@
 package nextflow.file.gs
+
 import java.nio.file.attribute.BasicFileAttributes
 import java.nio.file.attribute.FileTime
 import java.util.concurrent.TimeUnit
@@ -7,6 +8,7 @@ import com.google.cloud.storage.Blob
 import com.google.cloud.storage.BucketInfo
 import groovy.transform.CompileStatic
 import groovy.transform.EqualsAndHashCode
+import groovy.transform.ToString
 
 /**
  * Models file attributes for Google Cloud Storage
@@ -15,41 +17,37 @@ import groovy.transform.EqualsAndHashCode
  */
 @CompileStatic
 @EqualsAndHashCode(includeFields = true)
+@ToString(includeFields = true, includeNames = true)
 class GsFileAttributes implements BasicFileAttributes {
 
     private FileTime updateTime
 
     private FileTime creationTime
 
-    private boolean isDir
+    private boolean directory
 
     private long size
 
     private String objectId
 
-    GsFileAttributes( Blob blob ) {
+    GsFileAttributes(Blob blob){
         objectId = "${blob.getBucket()}/${blob.getName()}"
-        // creation
         creationTime = time(blob.getCreateTime())
-        // update
         updateTime = time(blob.getUpdateTime())
-        // is dir
-        isDir = blob.getName().endsWith('/')
-        // size
+        directory = blob.getName().endsWith('/')
         size = blob.getSize()
+    }
+
+    GsFileAttributes(BucketInfo info) {
+        objectId =info.getGeneratedId()
+        creationTime = time(info.getCreateTime())
+        directory = true
     }
 
     static private FileTime time(Long millis) {
         millis ? FileTime.from(millis, TimeUnit.MILLISECONDS) : null
     }
 
-    GsFileAttributes( BucketInfo info ) {
-        objectId = info.getGeneratedId()
-        creationTime = time(info.getCreateTime())
-        updateTime = null
-        isDir = true
-        size = 0
-    }
 
     @Override
     FileTime lastModifiedTime() {
@@ -68,12 +66,12 @@ class GsFileAttributes implements BasicFileAttributes {
 
     @Override
     boolean isRegularFile() {
-        return !isDir
+        return !directory
     }
 
     @Override
     boolean isDirectory() {
-        return isDir
+        return directory
     }
 
     @Override

@@ -43,6 +43,9 @@ import com.google.cloud.storage.StorageBatch
 import com.google.cloud.storage.StorageException
 import com.google.cloud.storage.StorageOptions
 import groovy.transform.CompileStatic
+
+import com.google.cloud.storage.Storage.BlobListOption
+
 /**
  * JSR-203 file system provider implementation for Google Cloud Storage
  *
@@ -424,15 +427,16 @@ class GsFileSystemProvider extends FileSystemProvider {
     DirectoryStream<Path> newDirectoryStream(Path obj, Filter<? super Path> filter) throws IOException {
         final dir = gpath(obj)
         final storage = storage(dir)
-        final bucket = storage.get(dir.bucketName)
-        if( !bucket )
-            throw new NoSuchFileException("Unknown Google Storage bucket: ${dir.bucketName}")
+        if( !dir.bucketName )
+            throw new NoSuchFileException("Missing Google storage bucket name: ${dir.toUriString()}")
 
+        def opts = [BlobListOption.currentDirectory()]
         def prefix = dir.objectName
-        if( prefix && !prefix.endsWith('/') ) prefix += '/'
-        Iterator<Blob> blobs = (prefix
-                ? bucket.list( Storage.BlobListOption.prefix(prefix) ).iterateAll()
-                : bucket.list().iterateAll() )
+        if( prefix && !prefix.endsWith('/') ) {
+            prefix += '/'
+            opts << BlobListOption.prefix(prefix)
+        }
+        Iterator<Blob> blobs = storage.list(dir.bucketName, opts as BlobListOption[]).iterateAll()
 
         return new DirectoryStream<Path>() {
             @Override
@@ -595,8 +599,26 @@ class GsFileSystemProvider extends FileSystemProvider {
             return bucket ? new GsFileAttributes(bucket) : null
         }
 
+        if( path.directory ) {
+            return readDirectoryAttrs0(storage,path)
+        }
+
         def blob = storage.get(path.blobId)
-        return blob ? new GsFileAttributes(blob) : null
+        GsFileAttributes result = blob ? new GsFileAttributes(blob) : null
+        return result ?: readDirectoryAttrs0(storage,path)
+    }
+
+    private GsFileAttributes readDirectoryAttrs0(Storage storage, GsPath path) {
+        final opts = []
+        opts << BlobListOption.prefix(path.objectName)
+        opts << BlobListOption.currentDirectory()
+        final itr = storage.list(path.bucketName, opts as BlobListOption[]).iterateAll()
+        while( itr.hasNext() ) {
+            def blob = itr.next()
+            if( blob.name == path.objectName + '/')
+                return new GsFileAttributes(blob)
+        }
+        return null
     }
 
     protected GsFileAttributesView getFileAttributeView0(GsPath path) {
