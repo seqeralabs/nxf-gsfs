@@ -1,0 +1,5 @@
+.idea
+.nextflow*
+build
+classes
+work

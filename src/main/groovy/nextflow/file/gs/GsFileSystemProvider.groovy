@@ -8,7 +8,6 @@ import static java.nio.file.StandardOpenOption.CREATE_NEW
 import static java.nio.file.StandardOpenOption.DSYNC
 import static java.nio.file.StandardOpenOption.READ
 import static java.nio.file.StandardOpenOption.SYNC
-import static java.nio.file.StandardOpenOption.TRUNCATE_EXISTING
 import static java.nio.file.StandardOpenOption.WRITE
 
 import java.nio.ByteBuffer
@@ -33,7 +32,7 @@ import java.nio.file.attribute.FileAttribute
 import java.nio.file.attribute.FileAttributeView
 import java.nio.file.spi.FileSystemProvider
 
-import com.google.auth.oauth2.UserCredentials
+import com.google.auth.oauth2.GoogleCredentials
 import com.google.cloud.ReadChannel
 import com.google.cloud.storage.Blob
 import com.google.cloud.storage.BlobId
@@ -44,7 +43,6 @@ import com.google.cloud.storage.StorageBatch
 import com.google.cloud.storage.StorageException
 import com.google.cloud.storage.StorageOptions
 import groovy.transform.CompileStatic
-import groovy.transform.PackageScope
 /**
  * JSR-203 file system provider implementation for Google Cloud Storage
  *
@@ -63,13 +61,6 @@ class GsFileSystemProvider extends FileSystemProvider {
     public final static String SCHEME = 'gs'
 
     private Map<String,GsFileSystem> fileSystems = [:]
-
-    @PackageScope
-    static GsFileSystemProvider create(File credentials, String projectId) {
-        def result = new GsFileSystemProvider()
-        result.newFileSystem(new URI('gs:///'), [credentials: credentials, projectId: projectId])
-        return result
-    }
 
     /**
      * @inheritDoc
@@ -102,7 +93,7 @@ class GsFileSystemProvider extends FileSystemProvider {
     protected Storage createStorage(File credentials, String projectId) {
         StorageOptions
                 .newBuilder()
-                .setCredentials(UserCredentials.fromStream(new FileInputStream(credentials)))
+                .setCredentials(GoogleCredentials.fromStream(new FileInputStream(credentials)))
                 .setProjectId(projectId)
                 .build()
                 .getService()
@@ -167,9 +158,8 @@ class GsFileSystemProvider extends FileSystemProvider {
         }
 
         // -- look-up config settings in the environment variables
-        credentials = (String)env.get('GOOGLE_APPLICATION_CREDENTIALS')
-        projectId = (String)env.get('GOOGLE_PROJECT_ID')
-
+        credentials = System.getProperty('GOOGLE_APPLICATION_CREDENTIALS')
+        projectId = System.getProperty('GOOGLE_PROJECT_ID')
         if( credentials && projectId ) {
             def storage = createStorage(new File(credentials), projectId)
             def result = new GsFileSystem(this, storage, bucket)
@@ -303,14 +293,14 @@ class GsFileSystemProvider extends FileSystemProvider {
 
         final gpath = gpath(path)
         if( modeWrite ) {
-            if( options.contains(CREATE_NEW) && exists(gpath)) {
-                throw new FileAlreadyExistsException(gpath.toUriString())
+            if( options.contains(CREATE_NEW) ) {
+                if(exists(gpath)) throw new FileAlreadyExistsException(gpath.toUriString())
             }
-            if( !options.contains(CREATE) && !exists(gpath) ) {
-                throw new NoSuchFileException(gpath.toUriString())
+            else if( !options.contains(CREATE)  ) {
+                if(!exists(gpath)) throw new NoSuchFileException(gpath.toUriString())
             }
-            if( !options.contains(TRUNCATE_EXISTING) ) {
-                throw new IllegalArgumentException("Google Storage file can only written using TRUNCATE mode")
+            if( options.contains(APPEND) ) {
+                throw new IllegalArgumentException("File can only written using APPEND mode is not supported by Google Storage")
             }
             return newWritableByteChannel(gpath)
         }

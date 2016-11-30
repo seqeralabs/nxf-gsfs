@@ -64,4 +64,9 @@ class GsDirectoryIterator implements Iterator<Path> {
         advance()
         return result
     }
+
+    @Override
+    void remove() {
+        throw new UnsupportedOperationException()
+    }
 }

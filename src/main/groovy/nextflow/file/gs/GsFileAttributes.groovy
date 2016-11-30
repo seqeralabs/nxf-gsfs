@@ -25,10 +25,10 @@ class GsFileAttributes implements BasicFileAttributes {
 
     private long size
 
-    private objectId
+    private String objectId
 
     GsFileAttributes( Blob blob ) {
-        objectId = blob.getBlobId()
+        objectId = "${blob.getBucket()}/${blob.getName()}"
         // creation
         creationTime = time(blob.getCreateTime())
         // update

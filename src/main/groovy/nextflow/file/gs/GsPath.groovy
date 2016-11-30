@@ -39,6 +39,7 @@ class GsPath implements Path {
         this.path = objectName ? Paths.get("/${fs.bucket}", objectName) : Paths.get("/${fs.bucket}")
     }
 
+    @PackageScope
     GsPath(GsFileSystem fs, Blob blob ) {
         this(fs, blob.getName())
         this.attributes = new GsFileAttributes(blob)
@@ -47,7 +48,7 @@ class GsPath implements Path {
     }
 
     @PackageScope
-    GsPath( GsFileSystem fs, Path path, boolean directory = false) {
+    GsPath( GsFileSystem fs, Path path, boolean directory ) {
         this.fs = fs
         this.path = path
         this.directory = directory
@@ -220,7 +221,8 @@ class GsPath implements Path {
         final count = path.nameCount
         List<Path> paths = new ArrayList<>()
         for( int i=0; i<count; i++ ) {
-            paths.add(i, new GsPath(fs, path.getName(i), i<count-1))
+            def dir = i<count-1
+            paths.add(i, new GsPath(fs, path.getName(i), dir))
         }
         paths.iterator()
     }

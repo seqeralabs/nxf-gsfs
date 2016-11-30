@@ -27,7 +27,7 @@ class GsPathTest extends Specification {
             def provider = Mock(GsFileSystemProvider)
             provider.getPath(_) >> { URI uri->
                 def b=uri.authority;
-                new GsPath(fsmock(b), Paths.get("/$b/${uri.path}"))
+                new GsPath(fsmock(b), Paths.get("/$b/${uri.path}"), false)
             }
             fs.provider() >> provider
 
@@ -41,10 +41,10 @@ class GsPathTest extends Specification {
         def bucket = path.getName(0).toString()
 
         if( path.isAbsolute() ) {
-            return new GsPath(fsmock(bucket), path)
+            return new GsPath(fsmock(bucket), path, false)
         }
         else {
-            return new GsPath(fsmock(""), path)
+            return new GsPath(fsmock(""), path, false)
         }
 
     }
@@ -57,7 +57,7 @@ class GsPathTest extends Specification {
         fs.getBucket() >> 'bucket'
 
         when:
-        def path = new GsPath(fs, (String)objectName)
+        def path = new GsPath(fs, objectName)
         then:
         path.toString() == expected
         path.directory == dir
