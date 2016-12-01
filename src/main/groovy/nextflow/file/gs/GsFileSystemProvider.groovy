@@ -12,6 +12,7 @@ import static java.nio.file.StandardOpenOption.WRITE
 
 import java.nio.ByteBuffer
 import java.nio.channels.SeekableByteChannel
+import java.nio.file.AccessDeniedException
 import java.nio.file.AccessMode
 import java.nio.file.CopyOption
 import java.nio.file.DirectoryNotEmptyException
@@ -573,10 +574,10 @@ class GsFileSystemProvider extends FileSystemProvider {
 
     @Override
     void checkAccess(Path path, AccessMode... modes) throws IOException {
-        if( modes.size() )
-            throw new UnsupportedOperationException()
-
-        readAttributes(gpath(path), GsFileAttributes.class)
+        final gs = gpath(path)
+        readAttributes(gs, GsFileAttributes.class)
+        if( AccessMode.EXECUTE in modes)
+            throw new AccessDeniedException(gs.toUriString(), null, 'Execute permission not allowed')
     }
 
     protected boolean exists( GsPath path ) {

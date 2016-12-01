@@ -83,10 +83,13 @@ class GsFilesTest extends Specification implements StorageHelper {
         given:
         final start = System.currentTimeMillis()
         final TEXT = "Hello world!"
-        final bucket = createBucket()
-        final keyName = "$bucket/data/alpha.txt"
+        final bucketName = createBucket()
+        final keyName = "$bucketName/data/alpha.txt"
         createObject(keyName, TEXT)
 
+        //
+        // -- readAttributes
+        //
         when:
         def path = Paths.get(new URI("gs://$keyName"))
         def attrs = Files.readAttributes(path, BasicFileAttributes)
@@ -101,16 +104,25 @@ class GsFilesTest extends Specification implements StorageHelper {
         attrs.lastModifiedTime().toMillis()-start < 5_000
         attrs.creationTime().toMillis()-start < 5_000
 
+        //
+        // -- getLastModifiedTime
+        //
         when:
         def time = Files.getLastModifiedTime(path)
         then:
         time == attrs.lastModifiedTime()
 
+        //
+        // -- getFileAttributeView
+        //
         when:
         def view = Files.getFileAttributeView(path, BasicFileAttributeView)
         then:
         view.readAttributes() == attrs
 
+        //
+        // -- readAttributes for a directory
+        //
         when:
         attrs = Files.readAttributes(path.getParent(), BasicFileAttributes)
         then:
@@ -119,13 +131,29 @@ class GsFilesTest extends Specification implements StorageHelper {
         attrs.size() == 0
         !attrs.isSymbolicLink()
         !attrs.isOther()
-        attrs.fileKey() == "$bucket/data/"
+        attrs.fileKey() == "$bucketName/data/"
         attrs.lastAccessTime() == null
         attrs.lastModifiedTime() == null
         attrs.creationTime() == null
 
+        //
+        // -- readAttributes for a bucket
+        //
+        when:
+        attrs = Files.readAttributes(Paths.get(new URI("gs://$bucketName")), BasicFileAttributes)
+        then:
+        !attrs.isRegularFile()
+        attrs.isDirectory()
+        attrs.size() == 0
+        !attrs.isSymbolicLink()
+        !attrs.isOther()
+        attrs.fileKey() == bucketName
+        attrs.creationTime().toMillis()-start < 5_000
+        attrs.lastAccessTime() == null
+        attrs.lastModifiedTime() == null
+
         cleanup:
-        if( bucket ) deleteBucket(bucket)
+        deleteBucket(bucketName)
     }
 
     def 'should copy a stream to bucket' () {
@@ -391,6 +419,10 @@ class GsFilesTest extends Specification implements StorageHelper {
         expect:
         Files.isDirectory(file.parent)
         !Files.isRegularFile(file.parent)
+        Files.isReadable(file)
+        Files.isWritable(file)
+        !Files.isExecutable(file)
+        !Files.isSymbolicLink(file)
 
         cleanup:
         deleteBucket(bucketName)
@@ -537,6 +569,43 @@ class GsFilesTest extends Specification implements StorageHelper {
         deleteBucket(bucketName)
     }
 
+    def 'should stream directory content' () {
+        given:
+        final bucketName = createBucket()
+        createObject("$bucketName/foo/file1.txt",'A')
+        createObject("$bucketName/foo/file2.txt",'BB')
+        createObject("$bucketName/foo/bar/file3.txt",'CCC')
+        createObject("$bucketName/foo/bar/baz/file4.txt",'DDDD')
+        createObject("$bucketName/foo/bar/file5.txt",'EEEEE')
+        createObject("$bucketName/foo/file6.txt",'FFFFFF')
+
+        when:
+        def list = Files.newDirectoryStream(Paths.get(new URI("gs://$bucketName"))).collect { it.getFileName().toString() }
+        then:
+        list.size() == 1
+        list == [ 'foo' ]
+
+        when:
+        list = Files.newDirectoryStream(Paths.get(new URI("gs://$bucketName/foo"))).collect { it.getFileName().toString() }
+        then:
+        list.size() == 4
+        list as Set == [ 'file1.txt', 'file2.txt', 'bar', 'file6.txt' ] as Set
+
+        when:
+        list = Files.newDirectoryStream(Paths.get(new URI("gs://$bucketName/foo/bar"))).collect { it.getFileName().toString() }
+        then:
+        list.size() == 3
+        list as Set == [ 'file3.txt', 'baz', 'file5.txt' ] as Set
+
+        when:
+        list = Files.newDirectoryStream(Paths.get(new URI("gs://$bucketName/foo/bar/baz"))).collect { it.getFileName().toString() }
+        then:
+        list.size() == 1
+        list  == [ 'file4.txt' ]
+
+        cleanup:
+        deleteBucket(bucketName)
+    }
 
     def 'should check walkTree' () {
 
@@ -615,6 +684,98 @@ class GsFilesTest extends Specification implements StorageHelper {
         dirs.size() == 2
         dirs.contains("")
         dirs.contains('baz')
+
+        cleanup:
+        deleteBucket(bucketName)
+    }
+
+    def 'should handle dir and files having the same name' () {
+
+        given:
+        final bucketName = createBucket()
+        createObject("$bucketName/foo",'file-1')
+        createObject("$bucketName/foo/bar",'file-2')
+        createObject("$bucketName/foo/baz",'file-3')
+        and:
+        final root = Paths.get(new URI("gs://$bucketName"))
+
+        when:
+        def file1 = root.resolve('foo')
+        then:
+        Files.isRegularFile(file1)
+        !Files.isDirectory(file1)
+        file1.text == 'file-1'
+
+        when:
+        def dir1 = root.resolve('foo/')
+        then:
+        !Files.isRegularFile(dir1)
+        Files.isDirectory(dir1)
+
+        when:
+        def file2 = root.resolve('foo/bar')
+        then:
+        Files.isRegularFile(file2)
+        !Files.isDirectory(file2)
+        file2.text == 'file-2'
+
+
+        when:
+        def parent = file2.parent
+        then:
+        !Files.isRegularFile(parent)
+        Files.isDirectory(parent)
+
+        when:
+        Set<String> dirs = []
+        Map<String,BasicFileAttributes> files = [:]
+        Files.walkFileTree(root, new SimpleFileVisitor<Path>() {
+
+            @Override
+            FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException
+            {
+                dirs << root.relativize(dir).toString()
+                return FileVisitResult.CONTINUE;
+            }
+
+            @Override
+            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException
+            {
+                files[root.relativize(file).toString()] = attrs
+                return FileVisitResult.CONTINUE;
+            }
+        })
+        then:
+        dirs.size() == 2
+        dirs.contains('')
+        dirs.contains('foo')
+        files.size() == 3
+        files.containsKey('foo')
+        files.containsKey('foo/bar')
+        files.containsKey('foo/baz')
+
+        cleanup:
+        deleteBucket(bucketName)
+
+    }
+
+    def 'should handle file names with same prefix' () {
+        given:
+        final bucketName = createBucket()
+        and:
+        createObject("$bucketName/transcript_index.junctions.fa", 'foo')
+        createObject("$bucketName/alpha-beta/file1", 'bar')
+        createObject("$bucketName/alpha/file2", 'baz')
+
+        expect:
+        Files.exists(Paths.get(new URI("gs://$bucketName/transcript_index.junctions.fa")))
+        !Files.exists(Paths.get(new URI("gs://$bucketName/transcript_index.junctions")))
+        Files.exists(Paths.get(new URI("gs://$bucketName/alpha-beta/file1")))
+        Files.exists(Paths.get(new URI("gs://$bucketName/alpha/file2")))
+        Files.exists(Paths.get(new URI("gs://$bucketName/alpha-beta/")))
+        Files.exists(Paths.get(new URI("gs://$bucketName/alpha-beta")))
+        Files.exists(Paths.get(new URI("gs://$bucketName/alpha/")))
+        Files.exists(Paths.get(new URI("gs://$bucketName/alpha")))
 
         cleanup:
         deleteBucket(bucketName)

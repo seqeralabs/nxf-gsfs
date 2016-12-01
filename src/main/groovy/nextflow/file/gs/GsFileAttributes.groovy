@@ -39,7 +39,7 @@ class GsFileAttributes implements BasicFileAttributes {
     }
 
     GsFileAttributes(BucketInfo info) {
-        objectId =info.getGeneratedId()
+        objectId = info.getName()
         creationTime = time(info.getCreateTime())
         directory = true
     }

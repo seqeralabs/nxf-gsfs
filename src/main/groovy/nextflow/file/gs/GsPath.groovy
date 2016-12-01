@@ -145,8 +145,9 @@ class GsPath implements Path {
         if( other.startsWith('/') )
             return (GsPath)fs.provider().getPath(new URI("$GsFileSystemProvider.SCHEME:/$other"))
 
+        def dir = other.endsWith('/')
         def newPath = path.resolve(other)
-        new GsPath(fs, newPath, false)
+        new GsPath(fs, newPath, dir)
     }
 
     @Override
