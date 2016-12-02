@@ -5,12 +5,14 @@ import java.nio.channels.SeekableByteChannel
 import java.nio.file.Path
 import java.nio.file.Paths
 
+import com.google.api.client.googleapis.json.GoogleJsonResponseException
 import com.google.auth.oauth2.GoogleCredentials
 import com.google.cloud.storage.Blob
 import com.google.cloud.storage.BlobId
 import com.google.cloud.storage.BlobInfo
 import com.google.cloud.storage.BucketInfo
 import com.google.cloud.storage.Storage
+import com.google.cloud.storage.StorageException
 import com.google.cloud.storage.StorageOptions
 /**
  *
@@ -78,6 +80,14 @@ trait StorageHelper {
         storage.create(info, content.bytes)
     }
 
+    def createDirectory(String path) {
+        if( !path.endsWith('/') )
+            path != '/'
+
+        final blobId = getBlobId(path)
+        final info = Blob.newBuilder(blobId)
+    }
+
     def deleteObject(String path) {
         storage.delete(getBlobId(path))
     }
@@ -95,8 +105,27 @@ trait StorageHelper {
         if( !bucket )
             return
 
-        bucket.list().iterateAll().each { Blob blob ->  storage.delete(blob.getBlobId()) }
-        storage.delete(bucketName)
+        int c = 0
+        while( true ) {
+            try {
+                bucket.list().iterateAll().each { Blob blob ->
+                    storage.delete(blob.getBlobId())
+                }
+
+                storage.delete(bucketName)
+                break
+            }
+            catch( StorageException e ) {
+                if(e.cause instanceof GoogleJsonResponseException ) {
+                    def response = (GoogleJsonResponseException)e.cause
+                    if( response.statusCode == 409 && c++<5)
+                        sleep 500
+                        continue
+                }
+                throw e
+            }
+        }
+
     }
 
     boolean existsPath(String path) {

@@ -1,6 +1,5 @@
 package nextflow.file.gs
 
-import static com.google.cloud.storage.Storage.CopyRequest
 import static java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import static java.nio.file.StandardOpenOption.APPEND
 import static java.nio.file.StandardOpenOption.CREATE
@@ -10,12 +9,10 @@ import static java.nio.file.StandardOpenOption.READ
 import static java.nio.file.StandardOpenOption.SYNC
 import static java.nio.file.StandardOpenOption.WRITE
 
-import java.nio.ByteBuffer
 import java.nio.channels.SeekableByteChannel
 import java.nio.file.AccessDeniedException
 import java.nio.file.AccessMode
 import java.nio.file.CopyOption
-import java.nio.file.DirectoryNotEmptyException
 import java.nio.file.DirectoryStream
 import java.nio.file.DirectoryStream.Filter
 import java.nio.file.FileAlreadyExistsException
@@ -34,25 +31,19 @@ import java.nio.file.attribute.FileAttributeView
 import java.nio.file.spi.FileSystemProvider
 
 import com.google.auth.oauth2.GoogleCredentials
-import com.google.cloud.ReadChannel
-import com.google.cloud.storage.Blob
-import com.google.cloud.storage.BlobId
-import com.google.cloud.storage.BlobInfo
-import com.google.cloud.storage.BucketInfo
 import com.google.cloud.storage.Storage
-import com.google.cloud.storage.StorageBatch
-import com.google.cloud.storage.StorageException
 import com.google.cloud.storage.StorageOptions
 import groovy.transform.CompileStatic
-
-import com.google.cloud.storage.Storage.BlobListOption
-
 /**
  * JSR-203 file system provider implementation for Google Cloud Storage
  *
  * See
  *  http://googlecloudplatform.github.io/google-cloud-java
  *  https://github.com/GoogleCloudPlatform/google-cloud-java#google-cloud-storage
+ *
+ *  Relevant links
+ *    https://cloud.google.com/storage/docs/consistency
+ *    https://cloud.google.com/storage/docs/gsutil/addlhelp/HowSubdirectoriesWork
  *
  * Examples
  *  https://github.com/GoogleCloudPlatform/google-cloud-java/tree/master/google-cloud-examples/src/main/java/com/google/cloud/examples/storage/snippets
@@ -74,10 +65,10 @@ class GsFileSystemProvider extends FileSystemProvider {
         return SCHEME
     }
 
-    static private GsPath gpath( Path path ) {
+    static private GsPath asGsPath(Path path ) {
         if( path instanceof GsPath )
             return (GsPath)path
-        throw new IllegalArgumentException("Not a valid Google Storage path object: `$path` [${path?.class?.name?:'-'}]" )
+        throw new IllegalArgumentException("Not a valid Google storage path object: `$path` [${path?.class?.name?:'-'}]" )
     }
 
     protected String getBucket(URI uri) {
@@ -127,7 +118,7 @@ class GsFileSystemProvider extends FileSystemProvider {
      *
      * @param   uri
      *          URI reference
-     * @param   env
+     * @param   config
      *          A map of provider specific properties to configure the file system;
      *          may be empty
      *
@@ -146,17 +137,21 @@ class GsFileSystemProvider extends FileSystemProvider {
      *          If the file system has already been created
      */
     @Override
-    synchronized GsFileSystem newFileSystem(URI uri, Map<String, ?> env) throws IOException {
+    synchronized GsFileSystem newFileSystem(URI uri, Map<String, ?> config) throws IOException {
         final bucket = getBucket(uri)
+        newFileSystem0(bucket, config)
+    }
+
+    synchronized GsFileSystem newFileSystem0(String bucket, Map<String, ?> config) throws IOException {
 
         if( fileSystems.containsKey(bucket) )
             throw new FileSystemAlreadyExistsException("File system already exists for Google Storage bucket: `$bucket`")
 
-        def credentials = (File)env.get('credentials')
-        def projectId = (String)env.get('projectId')
+        def credentials = (File)config.get('credentials')
+        def projectId = (String)config.get('projectId')
         if( credentials && projectId ) {
             def storage = createStorage(credentials, projectId)
-            def result = new GsFileSystem(this, storage, bucket)
+            def result = createFileSystem(storage, bucket, config)
             fileSystems[bucket] = result
             return result
         }
@@ -166,15 +161,30 @@ class GsFileSystemProvider extends FileSystemProvider {
         projectId = System.getProperty('GOOGLE_PROJECT_ID')
         if( credentials && projectId ) {
             def storage = createStorage(new File(credentials), projectId)
-            def result = new GsFileSystem(this, storage, bucket)
+            def result = createFileSystem(storage, bucket, config)
             fileSystems[bucket] = result
             return result
         }
 
         // -- fallback on default configuration
         def storage = createDefaultStorage()
-        def result = new GsFileSystem(this, storage, bucket)
+        def result = createFileSystem(storage, bucket, config)
         fileSystems[bucket] = result
+        return result
+    }
+
+    private GsFileSystem createFileSystem(Storage storage, String bucket, Map<String,?> config) {
+
+        def result = new GsFileSystem(this, storage, bucket)
+
+        // -- location
+        if( config.location )
+            result.location = config.location
+
+        // -- storage class
+        if( config.storageClass )
+            result.storageClass = config.storageClass
+
         return result
     }
 
@@ -214,16 +224,16 @@ class GsFileSystemProvider extends FileSystemProvider {
      */
     @Override
     FileSystem getFileSystem(URI uri) {
-        getFileSystem0(uri,false)
+        final bucket = getBucket(uri)
+        getFileSystem0(bucket,false)
     }
 
-    private GsFileSystem getFileSystem0(URI uri, boolean canCreate) {
-        final bucket = getBucket(uri)
+    protected GsFileSystem getFileSystem0(String bucket, boolean canCreate) {
 
         def fs = fileSystems.get(bucket)
         if( !fs ) {
             if( canCreate )
-                fs = newFileSystem(uri, System.getenv())
+                fs = newFileSystem0(bucket, System.getenv())
             else
                 throw new FileSystemNotFoundException("Missing Google Storage file system for bucket: `$bucket`")
         }
@@ -258,29 +268,43 @@ class GsFileSystemProvider extends FileSystemProvider {
      *          permission.
      */
     @Override
-    Path getPath(URI uri) {
-        final fs = getFileSystem0(uri,true)
-
-        def object = uri.path
-        while( object.startsWith('/') )
-            object = object.substring(1)
-
-        return fs.getPath(object)
+    GsPath getPath(URI uri) {
+        final bucket = getBucket(uri)
+        getPath("$bucket/${uri.path}")
     }
 
+    /**
+     * Get a {@link GsPath} from an object path
+     *
+     * See https://cloud.google.com/storage/docs/gsutil/addlhelp/HowSubdirectoriesWork
+     *
+     * @param path A path in the form {@code bucket/objectName}
+     * @return A {@link GsPath} object
+     */
+    GsPath getPath(String path) {
+        assert path
+        assert !path.startsWith('/')
+
+        int p = path.indexOf('/')
+        final bucket = p==-1 ? path : path.substring(0,p)
+        final fs = getFileSystem0(bucket,true)
+
+        new GsPath(fs, "/$path")
+    }
 
     static private FileSystemProvider provider( Path path ) {
         path.getFileSystem().provider()
     }
 
+    @Deprecated
     static private Storage storage( Path path ) {
         ((GsPath)path).getFileSystem().getStorage()
     }
 
     @Override
-    SeekableByteChannel newByteChannel(Path path, Set<? extends OpenOption> options, FileAttribute<?>... attrs) throws IOException {
-        final modeRead = options.contains(READ)
+    SeekableByteChannel newByteChannel(Path obj, Set<? extends OpenOption> options, FileAttribute<?>... attrs) throws IOException {
         final modeWrite = options.contains(WRITE) || options.contains(APPEND)
+        final modeRead = options.contains(READ) || !modeWrite
 
         if( modeRead && modeWrite ) {
             throw new IllegalArgumentException("Google Storage file cannot be opened in R/W mode at the same time")
@@ -295,237 +319,44 @@ class GsFileSystemProvider extends FileSystemProvider {
             throw new IllegalArgumentException("Google Storage file system does not support `DSYNC` mode")
         }
 
-        final gpath = gpath(path)
-        if( modeWrite ) {
-            if( options.contains(CREATE_NEW) ) {
-                if(exists(gpath)) throw new FileAlreadyExistsException(gpath.toUriString())
-            }
-            else if( !options.contains(CREATE)  ) {
-                if(!exists(gpath)) throw new NoSuchFileException(gpath.toUriString())
-            }
-            if( options.contains(APPEND) ) {
-                throw new IllegalArgumentException("File can only written using APPEND mode is not supported by Google Storage")
-            }
-            return newWritableByteChannel(gpath)
+        final path = asGsPath(obj)
+        final fs = path.getFileSystem()
+        if( modeRead ) {
+            return fs.newReadableByteChannel(path)
         }
-        else {
-            return newReadableByteChannel(gpath)
+
+        // -- mode write
+        if( options.contains(CREATE_NEW) ) {
+            if(fs.exists(path)) throw new FileAlreadyExistsException(path.toUriString())
         }
-    }
-
-    protected SeekableByteChannel newReadableByteChannel(GsPath path) {
-        final storage = storage(path)
-        final Blob blob = storage.get(path.blobId)
-        if( !blob ) throw new NoSuchFileException("File does not exist: ${path.toUriString()}")
-
-        final size = blob.getSize()
-        final ReadChannel reader = storage.reader(path.blobId)
-
-        return new SeekableByteChannel() {
-
-            long _position
-
-            @Override
-            int read(ByteBuffer dst) throws IOException {
-                final len = reader.read(dst)
-                _position += len
-                return len
-            }
-
-            @Override
-            int write(ByteBuffer src) throws IOException {
-                throw new UnsupportedOperationException()
-            }
-
-            @Override
-            long position() throws IOException {
-                return _position
-            }
-
-            @Override
-            SeekableByteChannel position(long newPosition) throws IOException {
-                reader.seek(newPosition)
-                return this
-            }
-
-            @Override
-            long size() throws IOException {
-                return size
-            }
-
-            @Override
-            SeekableByteChannel truncate(long dummy) throws IOException {
-                throw new UnsupportedOperationException()
-            }
-
-            @Override
-            boolean isOpen() {
-                return true
-            }
-
-            @Override
-            void close() throws IOException {
-                reader.close()
-            }
+        else if( !options.contains(CREATE)  ) {
+            if(!fs.exists(path)) throw new NoSuchFileException(path.toUriString())
         }
-    }
-
-    protected SeekableByteChannel newWritableByteChannel(GsPath path) {
-        final storage = storage(path)
-        final blobInfo = BlobInfo.newBuilder(path.blobId).build()
-        final writer = storage.writer(blobInfo)
-
-        return new SeekableByteChannel()  {
-
-            long _pos
-
-            @Override
-            int read(ByteBuffer dst) throws IOException {
-                throw new UnsupportedOperationException()
-            }
-
-            @Override
-            int write(ByteBuffer src) throws IOException {
-                def len = writer.write(src)
-                _pos += len
-                return len
-            }
-
-            @Override
-            long position() throws IOException {
-                return _pos
-            }
-
-            @Override
-            SeekableByteChannel position(long newPosition) throws IOException {
-                throw new UnsupportedOperationException()
-            }
-
-            @Override
-            long size() throws IOException {
-                return _pos
-            }
-
-            @Override
-            SeekableByteChannel truncate(long size) throws IOException {
-                throw new UnsupportedOperationException()
-            }
-
-            @Override
-            boolean isOpen() {
-                return true
-            }
-
-            @Override
-            void close() throws IOException {
-                writer.close()
-            }
+        if( options.contains(APPEND) ) {
+            throw new IllegalArgumentException("File can only written using APPEND mode is not supported by Google Storage")
         }
+        return fs.newWritableByteChannel(path)
     }
 
 
     @Override
     DirectoryStream<Path> newDirectoryStream(Path obj, Filter<? super Path> filter) throws IOException {
-        final dir = gpath(obj)
-        final storage = storage(dir)
-        if( !dir.bucketName )
-            throw new NoSuchFileException("Missing Google storage bucket name: ${dir.toUriString()}")
-
-        def opts = [BlobListOption.currentDirectory()]
-        def prefix = dir.objectName
-        if( prefix && !prefix.endsWith('/') ) {
-            prefix += '/'
-            opts << BlobListOption.prefix(prefix)
-        }
-        Iterator<Blob> blobs = storage.list(dir.bucketName, opts as BlobListOption[]).iterateAll()
-
-        return new DirectoryStream<Path>() {
-            @Override
-            Iterator<Path> iterator() {
-                return new GsDirectoryIterator(dir.fileSystem, blobs, filter)
-            }
-
-            @Override void close() throws IOException { }
-        }
+        final path = asGsPath(obj)
+        path.fileSystem.newDirectoryStream(path, filter)
     }
 
     @Override
     void createDirectory(Path dir, FileAttribute<?>... attrs) throws IOException {
-        final path = gpath(dir)
-        final storage = storage(dir)
-        assert path.bucketName, "Missing Google Storage bucket name"
-
-        if( path.isBucket() ) {
-            final info = BucketInfo.of(path.bucketName)
-            storage.create(info)
-        }
-        else {
-            path.directory = true
-            final blobId = BlobId.of(path.bucketName, path.objectName)
-            final info = BlobInfo.newBuilder(blobId).build()
-            storage.create(info)
-        }
-    }
-
-    void createFile(GsPath path, String content) {
-        createFile(path, content.getBytes())
-    }
-
-    void createFile(GsPath path, byte[] content) {
-        final storage = storage(path)
-        final blobId = BlobId.of(path.bucketName, path.objectName)
-        final info = BlobInfo.newBuilder(blobId).build()
-        storage.create(info, content)
+        final path = asGsPath(dir)
+        path.fileSystem.createDirectory(path)
     }
 
     @Override
     void delete(Path obj) throws IOException {
-        final path = gpath(obj)
-        assert path.bucketName, "Missing Google Storage bucket name"
-
-        if( path.isBucket() ) {
-            deleteBucket(path)
-        }
-        else {
-            deleteFile(path)
-        }
+        final path = asGsPath(obj)
+        path.fileSystem.delete(path)
     }
 
-    private void deleteFile(GsPath path) {
-        final storage = storage(path)
-        boolean result
-        try {
-            result = storage.delete(path.blobId)
-        }
-        catch( StorageException e ) {
-            throw new IOException("Error deleting file: ${path.toUriString()}", e)
-        }
-
-        if( !result ) {
-            throw new IOException("Error deleting file: ${path.toUriString()}")
-        }
-    }
-
-    private void deleteBucket(GsPath path) {
-        final storage = storage(path)
-        boolean result
-        try {
-            result = storage.delete(path.bucketName)
-        }
-        catch( StorageException e ) {
-            if( e.message == 'The bucket you tried to delete was not empty.' )
-                throw new DirectoryNotEmptyException(path.toUriString())
-            else
-                throw new IOException("Error deleting bucket: ${path.toUriString()}", e)
-        }
-
-        if( !result ) {
-            if(exists(path))
-                throw new IOException("Error deleting bucket: ${path.toUriString()}")
-            else
-                throw new NoSuchFileException(path.toUriString())
-        }
-    }
 
     @Override
     void copy(Path from, Path to, CopyOption... options) throws IOException {
@@ -533,22 +364,15 @@ class GsFileSystemProvider extends FileSystemProvider {
         if( from == to )
             return // nothing to do -- just return
 
-        final source = gpath(from)
-        final target = gpath(to)
-        if( options.contains(REPLACE_EXISTING) && exists(target) ) {
+        final source = asGsPath(from)
+        final target = asGsPath(to)
+        final fs = source.getFileSystem()
+
+        if( options.contains(REPLACE_EXISTING) && fs.exists(target) ) {
             delete(target)
         }
 
-        def request = CopyRequest
-                        .newBuilder()
-                        .setSource(source.blobId)
-                        .setTarget(target.blobId)
-                        .build();
-        def copyWriter = storage(source).copy(request);
-        while (!copyWriter.isDone()) {
-            copyWriter.copyChunk();
-        }
-
+        fs.copy(source, target)
     }
 
     @Override
@@ -574,83 +398,30 @@ class GsFileSystemProvider extends FileSystemProvider {
 
     @Override
     void checkAccess(Path path, AccessMode... modes) throws IOException {
-        final gs = gpath(path)
+        final gs = asGsPath(path)
         readAttributes(gs, GsFileAttributes.class)
         if( AccessMode.EXECUTE in modes)
             throw new AccessDeniedException(gs.toUriString(), null, 'Execute permission not allowed')
     }
 
-    protected boolean exists( GsPath path ) {
-        try {
-            return readAttributes(path, GsFileAttributes) != null
-        }
-        catch( IOException e ){
-            return false
-        }
-    }
-
-    protected GsFileAttributes readAttributes0(GsPath path)  {
-        final storage = storage(path)
-        def cache = path.attributesCache()
-        if( cache )
-            return cache
-
-        if( path.bucketName && !path.objectName ) {
-            def bucket = storage.get(path.bucketName)
-            return bucket ? new GsFileAttributes(bucket) : null
-        }
-
-        if( path.directory ) {
-            return readDirectoryAttrs0(storage,path)
-        }
-
-        def blob = storage.get(path.blobId)
-        GsFileAttributes result = blob ? new GsFileAttributes(blob) : null
-        return result ?: readDirectoryAttrs0(storage,path)
-    }
-
-    private GsFileAttributes readDirectoryAttrs0(Storage storage, GsPath path) {
-        final opts = []
-        opts << BlobListOption.prefix(path.objectName)
-        opts << BlobListOption.currentDirectory()
-        final itr = storage.list(path.bucketName, opts as BlobListOption[]).iterateAll()
-        while( itr.hasNext() ) {
-            def blob = itr.next()
-            if( blob.name == path.objectName + '/')
-                return new GsFileAttributes(blob)
-        }
-        return null
-    }
-
-    protected GsFileAttributesView getFileAttributeView0(GsPath path) {
-        final storage = storage(path)
-        def blob = storage.get(path.blobId)
-        if( blob ) {
-            return new GsFileAttributesView(blob)
-        }
-
-        StorageBatch batch = storage.batch();
-        batch.get(path.blobId).notify()
-        batch.submit()
-
-        throw new NoSuchFileException("File does not exist: ${path.toUriString()}")
-    }
 
     @Override
     def <V extends FileAttributeView> V getFileAttributeView(Path path, Class<V> type, LinkOption... options) {
         if( type == BasicFileAttributeView || type == GsFileAttributesView ) {
-            return (V)getFileAttributeView0(gpath(path))
+            def gsPath = asGsPath(path)
+            return (V)gsPath.fileSystem.getFileAttributeView(gsPath)
         }
         throw new UnsupportedOperationException("Not a valid Google Storage file attribute view: $type")
     }
 
     @Override
-    def <A extends BasicFileAttributes> A readAttributes(Path obj, Class<A> type, LinkOption... options) throws IOException {
+    def <A extends BasicFileAttributes> A readAttributes(Path path, Class<A> type, LinkOption... options) throws IOException {
         if( type == BasicFileAttributes || type == GsFileAttributes ) {
-            def path = gpath(obj)
-            def result = (A)readAttributes0(path)
-            if( result ) return result
-            throw new NoSuchFileException(path.toUriString())
+            def gsPath = asGsPath(path)
+            def result = (A)gsPath.fileSystem.readAttributes(gsPath)
+            if( result )
+                return result
+            throw new NoSuchFileException(gsPath.toUriString())
         }
         throw new UnsupportedOperationException("Not a valid Google Storage file attribute type: $type")
     }

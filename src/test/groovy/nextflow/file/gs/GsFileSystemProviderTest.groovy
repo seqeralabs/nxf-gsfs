@@ -4,6 +4,7 @@ import java.nio.file.FileSystemAlreadyExistsException
 
 import com.google.cloud.storage.Storage
 import spock.lang.Specification
+import spock.lang.Unroll
 
 /**
  *
@@ -16,6 +17,49 @@ class GsFileSystemProviderTest extends Specification {
         def provider = new GsFileSystemProvider()
         expect:
         provider.getScheme() == 'gs'
+    }
+
+    @Unroll
+    def 'should return a google storage path' () {
+        given:
+        def fs = Mock(GsFileSystem)
+        fs.getBucket() >> 'bucket'
+        def provider = Spy(GsFileSystemProvider)
+
+        when:
+        def path = provider.getPath(new URI(uri))
+        then:
+        1 * provider.getFileSystem0('bucket', true) >> fs
+        path == new GsPath(fs, expected)
+
+        where:
+        uri                             | expected
+        'gs://bucket'                   | '/bucket/'
+        'gs://bucket/'                  | '/bucket/'
+        'gs://bucket/this/and/that'     | '/bucket/this/and/that'
+        'gs://bucket/this/and/that/'    | '/bucket/this/and/that/'
+
+    }
+
+    @Unroll
+    def 'should get a google storage path' () {
+        given:
+        def fs = Mock(GsFileSystem)
+        fs.getBucket() >> bucket
+        def provider = Spy(GsFileSystemProvider)
+
+        when:
+        def path = provider.getPath(objectName)
+        then:
+        1 * provider.getFileSystem0(bucket, true) >> fs
+        path == new GsPath(fs, expected)
+
+        where:
+        bucket              | objectName            | expected
+        'bucket'            | 'bucket'              | '/bucket/'
+        'bucket'            | 'bucket/'             | '/bucket/'
+        'bucket'            | 'bucket/a/b'          | '/bucket/a/b'
+        'bucket'            | 'bucket/a/b/'         | '/bucket/a/b/'
     }
 
     def 'should return the bucket given a URI'() {

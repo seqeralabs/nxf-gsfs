@@ -15,6 +15,7 @@ import java.nio.file.attribute.BasicFileAttributeView
 import java.nio.file.attribute.BasicFileAttributes
 
 import com.google.cloud.storage.Blob
+import com.google.cloud.storage.BlobId
 import com.google.cloud.storage.Storage
 import spock.lang.Ignore
 import spock.lang.Requires
@@ -73,7 +74,7 @@ class GsFilesTest extends Specification implements StorageHelper {
         createObject("$bucket/file-name.txt", TEXT)
         then:
         new String(Files.readAllBytes(path)) == TEXT
-        Files.readAllLines(path).get(0) == TEXT
+        Files.readAllLines(path, Charset.forName('UTF-8')).get(0) == TEXT
 
         cleanup:
         if( bucket ) deleteBucket(bucket)
@@ -223,7 +224,6 @@ class GsFilesTest extends Specification implements StorageHelper {
         readObject(target) == TEXT
 
         cleanup:
-        if( source ) Files.delete(source)
         if( bucketName ) deleteBucket(bucketName)
     }
 
@@ -261,20 +261,20 @@ class GsFilesTest extends Specification implements StorageHelper {
         existsPath(dir)
 
         cleanup:
-        if(bucketName) {
-            deleteBucket(bucketName)
-        }
+        deleteBucket(bucketName)
     }
 
     def 'should create a directory tree' () {
         given:
-        def bucketName = getRndBucketName()
+        def bucketName = createBucket()
         def dir = Paths.get(new URI("gs://$bucketName/alpha/bravo"))
 
         when:
         Files.createDirectories(dir)
+        sleep 500   // <-- note List operation is eventually consistent -- see https://cloud.google.com/storage/docs/consistency
         then:
-        existsPath(dir)
+        Files.exists(Paths.get(new URI("gs://$bucketName/alpha/")))
+        Files.exists(Paths.get(new URI("gs://$bucketName/alpha/bravo/")))
 
         cleanup:
         deleteBucket(bucketName)
@@ -300,10 +300,10 @@ class GsFilesTest extends Specification implements StorageHelper {
         final bucketName = createBucket()
         final base = Paths.get(new URI("gs://$bucketName"))
 
-        when:
-        def t1 = Files.createTempDirectory(base, 'test')
-        then:
-        existsPath(t1)
+//        when:
+//        def t1 = Files.createTempDirectory(base, 'test')
+//        then:
+//        existsPath(t1)
 
         when:
         def t2 = Files.createTempFile(base, 'prefix', 'suffix')
@@ -359,11 +359,17 @@ class GsFilesTest extends Specification implements StorageHelper {
         then:
         thrown(DirectoryNotEmptyException)
 
+        when:
+        createObject("$bucketName/this", 'HELLO')
+        Files.delete(Paths.get(path2))
+        then:
+        thrown(DirectoryNotEmptyException)
+
         cleanup:
         deleteBucket(bucketName)
     }
 
-    def 'should throw a NoSuchFileException when deleting a bucket not existing' () {
+    def 'should throw a NoSuchFileException when deleting an object not existing' () {
 
         given:
         def bucketName = getRndBucketName()
@@ -569,6 +575,29 @@ class GsFilesTest extends Specification implements StorageHelper {
         deleteBucket(bucketName)
     }
 
+    @Ignore
+    def 'should list root directory' () {
+        given:
+        final bucketName1 = createBucket()
+        final bucketName2 = createBucket()
+        final bucketName3 = createBucket()
+        and:
+        def root = Paths.get(new URI('gs:///'))
+
+        when:
+        def paths = Files.newDirectoryStream(root).collect { it.fileName.toString() }
+        then:
+        paths.contains(bucketName1)
+        paths.contains(bucketName2)
+        paths.contains(bucketName3)
+
+        cleanup:
+        deleteBucket(bucketName1)
+        deleteBucket(bucketName2)
+        deleteBucket(bucketName3)
+    }
+
+
     def 'should stream directory content' () {
         given:
         final bucketName = createBucket()
@@ -676,7 +705,6 @@ class GsFilesTest extends Specification implements StorageHelper {
         })
 
         then:
-        println files
         files.size()==3
         files.containsKey('file3.txt')
         files.containsKey('file4.txt')
@@ -787,18 +815,27 @@ class GsFilesTest extends Specification implements StorageHelper {
         final bucketName = createBucket()
         createObject("$bucketName/foo/file1.txt",'A')
         createObject("$bucketName/foo/file2.txt",'BB')
+        createObject("$bucketName/foo/bar",'BB')
         createObject("$bucketName/foo/bar/file3.txt",'CCC')
         createObject("$bucketName/foo/bar/baz/file4.txt",'DDDD')
         createObject("$bucketName/foo/bar/file5.txt",'EEEEE')
         createObject("$bucketName/foo/file6.txt",'FFFFFF')
+        sleep 5_000
 
         when:
-        def opts = [Storage.BlobListOption.currentDirectory()]
+        def opts = [] //[Storage.BlobListOption.currentDirectory()]
         opts << Storage.BlobListOption.prefix('foo/bar')
-        def values = storage.list(bucketName, opts as Storage.BlobListOption[]).getValues()
-        values.each { Blob it -> println "${it.name}; dir=${it.directory}" }
+        def values = (List<Blob>)storage.list(bucketName, opts as Storage.BlobListOption[]).getValues().collect()
+        values.each { println it }
         then:
-        true
+        values.size()==1
+        values.get(0).getName() == 'foo/bar/'
+
+        when:
+        def id = BlobId.of(bucketName, 'foo/bar/')
+        def blob = storage.get(id)
+        then:
+        blob.isDirectory()
 
         cleanup:
         deleteBucket(bucketName)

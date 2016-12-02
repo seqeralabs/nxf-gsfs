@@ -21,14 +21,11 @@ class GsPathTest extends Specification {
     private fsmock(String bucket) {
         def fs = fileSystems.get(bucket)
         if( !fs ) {
-            fs = Mock(GsFileSystem)
-            fs.getBucket() >> "/$bucket".toString()
+            def provider = Spy(GsFileSystemProvider)
+            provider.getFileSystem0(_ as String,true) >> { b, create -> fsmock(b) }
 
-            def provider = Mock(GsFileSystemProvider)
-            provider.getPath(_) >> { URI uri->
-                def b=uri.authority;
-                new GsPath(fsmock(b), Paths.get("/$b/${uri.path}"), false)
-            }
+            fs = Spy(GsFileSystem)
+            fs.getBucket() >> bucket
             fs.provider() >> provider
 
             fileSystems[bucket] = fs
@@ -64,14 +61,11 @@ class GsPathTest extends Specification {
 
         where:
         objectName              | expected              | dir
-        'file.txt'              | '/bucket/file.txt'    | false
-        '/file.txt'             | '/bucket/file.txt'    | false
-        '/file.txt'             | '/bucket/file.txt'    | false
-        '/a/b/c'                | '/bucket/a/b/c'       | false
-        '/a/b/c/'               | '/bucket/a/b/c'       | true
-        null                    | '/bucket'             | true
-        ''                      | '/bucket'             | true
-        '/'                     | '/bucket'             | true
+        '/bucket/file.txt'      | '/bucket/file.txt'    | false
+        '/bucket/a/b/c'         | '/bucket/a/b/c'       | false
+        '/bucket/a/b/c/'        | '/bucket/a/b/c'       | true
+        '/bucket'               | '/bucket'             | true
+        '/bucket/'              | '/bucket'             | true
 
     }
 
@@ -301,11 +295,11 @@ class GsPathTest extends Specification {
         getPath(base).resolveSibling(getPath(path)) == getPath(expected)
 
         where:
-        base                        | path                          | expected
-        '/nxf-bucket/some/path'     | 'file-name.txt'               | '/nxf-bucket/some/file-name.txt'
-        '/nxf-bucket/data'          | 'path/file-name.txt'          | '/nxf-bucket/path/file-name.txt'
-        '/nxf-bucket/data'          | '/other/file-name.txt'        | '/other/file-name.txt'
-        '/nxf-bucket'               | 'some/file-name.txt'          | '/some/file-name.txt'
+        base                    | path                          | expected
+        '/bucket/some/path'     | 'file-name.txt'               | '/bucket/some/file-name.txt'
+        '/bucket/data'          | 'path/file-name.txt'          | '/bucket/path/file-name.txt'
+        '/bucket/data'          | '/other/file-name.txt'        | '/other/file-name.txt'
+        '/bucket'               | 'some/file-name.txt'          | '/some/file-name.txt'
     }
 
     @Unroll

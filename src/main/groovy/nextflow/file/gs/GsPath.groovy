@@ -13,13 +13,12 @@ import com.google.cloud.storage.BlobId
 import groovy.transform.CompileStatic
 import groovy.transform.EqualsAndHashCode
 import groovy.transform.PackageScope
-
 /**
  * Model a Google Storage path
  *
  * @author Paolo Di Tommaso <paolo.ditommaso@gmail.com>
  */
-@EqualsAndHashCode(includes = 'fs,path', includeFields = true)
+@EqualsAndHashCode(includes = 'fs,path,directory', includeFields = true)
 @CompileStatic
 class GsPath implements Path {
 
@@ -32,23 +31,25 @@ class GsPath implements Path {
     @PackageScope
     boolean directory
 
-    GsPath( GsFileSystem fs, String objectName ) {
-        assert fs, "File system cannot be null"
-        this.fs = fs
-        this.directory = !objectName || objectName.endsWith("/")
-        this.path = objectName ? Paths.get("/${fs.bucket}", objectName) : Paths.get("/${fs.bucket}")
+    GsPath( GsFileSystem fs, String path ) {
+        this(fs, Paths.get(path), path.endsWith("/") || path=="/$fs.bucket")
     }
 
     @PackageScope
     GsPath(GsFileSystem fs, Blob blob ) {
-        this(fs, blob.getName())
+        this(fs, "/${blob.bucket}/${blob.name}")
         this.attributes = new GsFileAttributes(blob)
-        if( fs.getBucket() != blob.getBucket() )
-            throw new IllegalArgumentException("Blob bucket does not match")
     }
 
     @PackageScope
     GsPath( GsFileSystem fs, Path path, boolean directory ) {
+        // make sure that the path bucket match the file system bucket
+        if( path.isAbsolute() && path.nameCount>0 ) {
+            def bkt = path.getName(0).toString()
+            if( bkt != fs.bucket )
+                throw new IllegalArgumentException("Path bucket `$bkt` does not match file system bucket: `${fs.bucket}`")
+        }
+
         this.fs = fs
         this.path = path
         this.directory = directory
@@ -66,7 +67,7 @@ class GsPath implements Path {
 
     @Override
     Path getRoot() {
-        path.isAbsolute() ? new GsPath(fs, "/") : null
+        path.isAbsolute() ? new GsPath(fs, "/${path.getName(0)}/") : null
     }
 
     @Override
@@ -156,20 +157,20 @@ class GsPath implements Path {
             throw new ProviderMismatchException()
 
         final that = (GsPath)other
-        if( other.isAbsolute() )
-            return that
-
         def newPath = path.resolveSibling(that.path)
-        new GsPath(fs, newPath, false)
+        if( newPath.isAbsolute() )
+            fs.getPath(newPath.toString())
+        else
+            new GsPath(fs, newPath, false)
     }
 
     @Override
     Path resolveSibling(String other) {
-        if( other.startsWith('/') )
-            return (GsPath)fs.provider().getPath(new URI("$GsFileSystemProvider.SCHEME:/$other"))
-
         def newPath = path.resolveSibling(other)
-        new GsPath(fs, newPath, false)
+        if( newPath.isAbsolute() )
+            fs.getPath(newPath.toString())
+        else
+            new GsPath(fs, newPath, false)
     }
 
     @Override
@@ -234,7 +235,7 @@ class GsPath implements Path {
     }
 
     String getBucketName() {
-        path.isAbsolute() ? path.getName(0) : null
+        path.isAbsolute() && path.nameCount>0 ? path.getName(0) : null
     }
 
     boolean isBucket() {
