@@ -5,11 +5,10 @@ import java.nio.file.attribute.FileTime
 import java.util.concurrent.TimeUnit
 
 import com.google.cloud.storage.Blob
-import com.google.cloud.storage.BucketInfo
+import com.google.cloud.storage.Bucket
 import groovy.transform.CompileStatic
 import groovy.transform.EqualsAndHashCode
 import groovy.transform.ToString
-
 /**
  * Models file attributes for Google Cloud Storage
  *
@@ -30,6 +29,12 @@ class GsFileAttributes implements BasicFileAttributes {
 
     private String objectId
 
+    static GsFileAttributes root() {
+        new GsFileAttributes(size: 0, objectId: '/', directory: true)
+    }
+
+    GsFileAttributes() {}
+
     GsFileAttributes(Blob blob){
         objectId = "${blob.getBucket()}/${blob.getName()}"
         creationTime = time(blob.getCreateTime())
@@ -38,13 +43,13 @@ class GsFileAttributes implements BasicFileAttributes {
         size = blob.getSize()
     }
 
-    GsFileAttributes(BucketInfo info) {
-        objectId = info.getName()
-        creationTime = time(info.getCreateTime())
+    protected GsFileAttributes(Bucket bucket) {
+        objectId = bucket.name
+        creationTime = time(bucket.getCreateTime())
         directory = true
     }
 
-    static private FileTime time(Long millis) {
+    static protected FileTime time(Long millis) {
         millis ? FileTime.from(millis, TimeUnit.MILLISECONDS) : null
     }
 
@@ -109,4 +114,5 @@ class GsFileAttributes implements BasicFileAttributes {
     int hashCode() {
         Objects.hash( creationTime(), lastModifiedTime(), isRegularFile(), size() )
     }
+
 }

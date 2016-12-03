@@ -76,11 +76,16 @@ class GsFileSystemProvider extends FileSystemProvider {
         if( !uri.scheme )
             throw new IllegalArgumentException("Missing URI scheme")
 
-        if( !uri.authority )
-            throw new IllegalArgumentException("Missing bucket name")
-
         if( uri.scheme.toLowerCase() != SCHEME )
             throw new IllegalArgumentException("Mismatch provider URI scheme: `$scheme`")
+
+        if( !uri.authority ) {
+            if( uri.path == '/' )
+                return '/'
+            else
+                throw new IllegalArgumentException("Missing bucket name")
+        }
+
 
         return uri.authority.toLowerCase()
     }
@@ -270,7 +275,7 @@ class GsFileSystemProvider extends FileSystemProvider {
     @Override
     GsPath getPath(URI uri) {
         final bucket = getBucket(uri)
-        getPath("$bucket/${uri.path}")
+        bucket=='/' ? getPath('/') : getPath("$bucket/${uri.path}")
     }
 
     /**
@@ -283,13 +288,20 @@ class GsFileSystemProvider extends FileSystemProvider {
      */
     GsPath getPath(String path) {
         assert path
-        assert !path.startsWith('/')
 
-        int p = path.indexOf('/')
-        final bucket = p==-1 ? path : path.substring(0,p)
-        final fs = getFileSystem0(bucket,true)
+        if( path == '/' ) {
+            final fs = getFileSystem0('/',true)
+            return new GsPath(fs, "/")
+        }
+        else if( !path.startsWith('/') ) {
+            int p = path.indexOf('/')
+            final bucket = p==-1 ? path : path.substring(0,p)
+            final fs = getFileSystem0(bucket,true)
+            new GsPath(fs, "/$path")
+        }
+        else
+            throw new IllegalArgumentException("Google storage path cannot start with a `/` character")
 
-        new GsPath(fs, "/$path")
     }
 
     static private FileSystemProvider provider( Path path ) {
@@ -301,8 +313,15 @@ class GsFileSystemProvider extends FileSystemProvider {
         ((GsPath)path).getFileSystem().getStorage()
     }
 
+    private void checkRoot(Path path) {
+        if( path.toString() == '/' )
+            throw new UnsupportedOperationException('Operation not supported on root path')
+    }
+
     @Override
     SeekableByteChannel newByteChannel(Path obj, Set<? extends OpenOption> options, FileAttribute<?>... attrs) throws IOException {
+        checkRoot(obj)
+
         final modeWrite = options.contains(WRITE) || options.contains(APPEND)
         final modeRead = options.contains(READ) || !modeWrite
 
@@ -347,12 +366,14 @@ class GsFileSystemProvider extends FileSystemProvider {
 
     @Override
     void createDirectory(Path dir, FileAttribute<?>... attrs) throws IOException {
+        checkRoot(dir)
         final path = asGsPath(dir)
         path.fileSystem.createDirectory(path)
     }
 
     @Override
     void delete(Path obj) throws IOException {
+        checkRoot(obj)
         final path = asGsPath(obj)
         path.fileSystem.delete(path)
     }
@@ -364,6 +385,7 @@ class GsFileSystemProvider extends FileSystemProvider {
         if( from == to )
             return // nothing to do -- just return
 
+        checkRoot(from); checkRoot(to)
         final source = asGsPath(from)
         final target = asGsPath(to)
         final fs = source.getFileSystem()
@@ -398,15 +420,16 @@ class GsFileSystemProvider extends FileSystemProvider {
 
     @Override
     void checkAccess(Path path, AccessMode... modes) throws IOException {
+        checkRoot(path)
         final gs = asGsPath(path)
         readAttributes(gs, GsFileAttributes.class)
         if( AccessMode.EXECUTE in modes)
             throw new AccessDeniedException(gs.toUriString(), null, 'Execute permission not allowed')
     }
 
-
     @Override
     def <V extends FileAttributeView> V getFileAttributeView(Path path, Class<V> type, LinkOption... options) {
+        checkRoot(path)
         if( type == BasicFileAttributeView || type == GsFileAttributesView ) {
             def gsPath = asGsPath(path)
             return (V)gsPath.fileSystem.getFileAttributeView(gsPath)

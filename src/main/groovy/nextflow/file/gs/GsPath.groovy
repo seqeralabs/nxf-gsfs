@@ -10,6 +10,7 @@ import java.nio.file.WatchService
 
 import com.google.cloud.storage.Blob
 import com.google.cloud.storage.BlobId
+import com.google.cloud.storage.Bucket
 import groovy.transform.CompileStatic
 import groovy.transform.EqualsAndHashCode
 import groovy.transform.PackageScope
@@ -31,8 +32,12 @@ class GsPath implements Path {
     @PackageScope
     boolean directory
 
+    @PackageScope
+    GsPath() {}
+
+    @PackageScope
     GsPath( GsFileSystem fs, String path ) {
-        this(fs, Paths.get(path), path.endsWith("/") || path=="/$fs.bucket")
+        this(fs, Paths.get(path), path.endsWith("/") || path=="/$fs.bucket".toString())
     }
 
     @PackageScope
@@ -53,6 +58,18 @@ class GsPath implements Path {
         this.fs = fs
         this.path = path
         this.directory = directory
+    }
+
+    @PackageScope
+    GsPath(GsFileSystem fs, Bucket bucket ) {
+        this(fs, "/${bucket.name}/")
+        this.attributes = new GsBucketAttributes(bucket)
+    }
+
+    @PackageScope
+    GsPath setAttributes(GsFileAttributes attrs ) {
+        this.attributes = attrs
+        return this
     }
 
     @Override
@@ -235,11 +252,15 @@ class GsPath implements Path {
     }
 
     String getBucketName() {
-        path.isAbsolute() && path.nameCount>0 ? path.getName(0) : null
+        if( path.isAbsolute() ) {
+            path.nameCount==0 ? '/' : path.getName(0)
+        }
+        else
+            return null
     }
 
     boolean isBucket() {
-        path.isAbsolute() && path.nameCount==1
+        path.isAbsolute() && path.nameCount<2
     }
 
     String getObjectName() {

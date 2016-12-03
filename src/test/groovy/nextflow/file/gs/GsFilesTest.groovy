@@ -575,12 +575,16 @@ class GsFilesTest extends Specification implements StorageHelper {
         deleteBucket(bucketName)
     }
 
-    @Ignore
     def 'should list root directory' () {
         given:
         final bucketName1 = createBucket()
         final bucketName2 = createBucket()
         final bucketName3 = createBucket()
+        and:
+        createObject("$bucketName1/file.1", 'xxx')
+        createObject("$bucketName2/foo/file.2", 'xxx')
+        createObject("$bucketName2/foo/bar/file.3", 'xxx')
+
         and:
         def root = Paths.get(new URI('gs:///'))
 
@@ -590,6 +594,41 @@ class GsFilesTest extends Specification implements StorageHelper {
         paths.contains(bucketName1)
         paths.contains(bucketName2)
         paths.contains(bucketName3)
+
+        when:
+        Set<String> dirs = []
+        Set<String> files = []
+        Files.walkFileTree(root, new SimpleFileVisitor<Path>() {
+
+            @Override
+            public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs)
+                    throws IOException
+            {
+                dirs << dir.toString()
+                return FileVisitResult.CONTINUE;
+            }
+
+            @Override
+            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs)
+                    throws IOException
+            {
+                files << file.toString()
+                return FileVisitResult.CONTINUE;
+            }
+
+        })
+        then:
+        println dirs
+        println files
+        dirs.contains('/')
+        dirs.contains("/$bucketName1" as String)
+        dirs.contains("/$bucketName2" as String)
+        dirs.contains("/$bucketName2/foo" as String)
+        dirs.contains("/$bucketName2/foo/bar" as String)
+        dirs.contains("/$bucketName3" as String)
+        files.contains("/$bucketName1/file.1" as String)
+        files.contains("/$bucketName2/foo/file.2" as String)
+        files.contains("/$bucketName2/foo/bar/file.3" as String)
 
         cleanup:
         deleteBucket(bucketName1)

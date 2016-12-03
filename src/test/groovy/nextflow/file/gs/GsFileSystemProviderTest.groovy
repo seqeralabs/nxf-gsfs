@@ -29,11 +29,12 @@ class GsFileSystemProviderTest extends Specification {
         when:
         def path = provider.getPath(new URI(uri))
         then:
-        1 * provider.getFileSystem0('bucket', true) >> fs
+        1 * provider.getFileSystem0(_, true) >> fs
         path == new GsPath(fs, expected)
 
         where:
         uri                             | expected
+        'gs:///'                        | '/'
         'gs://bucket'                   | '/bucket/'
         'gs://bucket/'                  | '/bucket/'
         'gs://bucket/this/and/that'     | '/bucket/this/and/that'

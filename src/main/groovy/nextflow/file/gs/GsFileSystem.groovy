@@ -18,11 +18,12 @@ import com.google.cloud.ReadChannel
 import com.google.cloud.storage.Blob
 import com.google.cloud.storage.BlobId
 import com.google.cloud.storage.BlobInfo
+import com.google.cloud.storage.Bucket
 import com.google.cloud.storage.BucketInfo
 import com.google.cloud.storage.Storage
 import com.google.cloud.storage.StorageBatch
 import com.google.cloud.storage.StorageException
-import groovy.transform.CompileDynamic
+import com.google.cloud.storage.Storage.BlobListOption
 import groovy.transform.CompileStatic
 import groovy.transform.PackageScope
 /**
@@ -36,6 +37,8 @@ import groovy.transform.PackageScope
  */
 @CompileStatic
 class GsFileSystem extends FileSystem {
+
+    private static String ROOT = '/'
 
     private GsFileSystemProvider provider
 
@@ -87,7 +90,7 @@ class GsFileSystem extends FileSystem {
 
     @Override
     boolean isReadOnly() {
-        return false
+        return bucket == ROOT
     }
 
     @Override
@@ -95,18 +98,15 @@ class GsFileSystem extends FileSystem {
         return '/'
     }
 
-//    @Override
-//    @CompileDynamic
-//    Iterable<Path> getRootDirectories() {
-//        storage
-//                .list()
-//                .iterateAll()
-//                .collect { Bucket b -> provider.getPath(new URI("$GsFileSystemProvider.SCHEME://${b.getName()}")) }
-//    }
+    Iterable<? extends Path> getRootDirectories() {
+        return bucket == ROOT ? listBuckets() : [ new GsPath(this, "/$bucket/") ]
+    }
 
-    @CompileDynamic
-    Iterable<Path> getRootDirectories() {
-        [ new GsPath(this, "/$bucket/") ]
+    private Iterable<? extends Path> listBuckets() {
+        storage
+                .list()
+                .iterateAll()
+                .collect { Bucket b -> provider.getPath(b.getName()) }
     }
 
     @Override
@@ -286,27 +286,32 @@ class GsFileSystem extends FileSystem {
         if( !dir.bucketName )
             throw new NoSuchFileException("Missing Google storage bucket name: ${dir.toUriString()}")
 
-        def opts = [Storage.BlobListOption.currentDirectory()]
-        def prefix = dir.objectName
-        if( prefix && !prefix.endsWith('/') ) {
-            prefix += '/'
-            opts << Storage.BlobListOption.prefix(prefix)
+        final fs = dir.getFileSystem()
+        if( dir.bucketName == ROOT ) {
+            Iterator<Bucket> buckets = storage.list().iterateAll()
+            return GsPathIterator.buckets(fs, buckets, filter)
         }
-        Iterator<Blob> blobs = storage.list(dir.bucketName, opts as Storage.BlobListOption[]).iterateAll()
 
-        return new DirectoryStream<Path>() {
-            @Override
-            Iterator<Path> iterator() {
-                return new GsDirectoryIterator(dir.fileSystem, blobs, filter)
+        else {
+            def opts = [BlobListOption.currentDirectory()]
+            def prefix = dir.objectName
+            if( prefix && !prefix.endsWith('/') ) {
+                prefix += '/'
+                opts << BlobListOption.prefix(prefix)
             }
-
-            @Override void close() throws IOException { }
+            Iterator<Blob> blobs = storage.list(dir.bucketName, opts as BlobListOption[]).iterateAll()
+            GsPathIterator.dirs(fs, blobs, filter)
         }
+
     }
 
     @PackageScope
     def createDirectory(GsPath path) {
-        assert path.bucketName, "Missing Google Storage bucket name"
+        if( isReadOnly() )
+            throw new UnsupportedOperationException('Operation not support in root path')
+
+        if( !path.bucketName )
+            throw new IllegalArgumentException("Missing Google Storage bucket name")
 
         if( path.isBucket() ) {
             def builder = BucketInfo.newBuilder(path.bucketName)
@@ -326,7 +331,8 @@ class GsFileSystem extends FileSystem {
 
     @PackageScope
     void delete(GsPath path)  {
-        assert path.bucketName, "Missing Google Storage bucket name"
+        if( !path.bucketName )
+            throw new IllegalArgumentException("Missing Google Storage bucket name")
 
         if( path.isBucket() ) {
             deleteBucket(path)
@@ -428,9 +434,13 @@ class GsFileSystem extends FileSystem {
         if( cache )
             return cache
 
+        if( path.toString() == ROOT ) {
+            return GsFileAttributes.root()
+        }
+
         if( path.bucketName && !path.objectName ) {
             def bucket = storage.get(path.bucketName)
-            return bucket ? new GsFileAttributes(bucket) : null
+            return bucket ? new GsBucketAttributes(bucket) : null
         }
 
         if( path.directory ) {
