@@ -4,6 +4,7 @@ import com.google.cloud.storage.Bucket
 import groovy.transform.CompileStatic
 
 /**
+ * Models attributes of a Google storage bucket
  *
  * @author Paolo Di Tommaso <paolo.ditommaso@gmail.com>
  */

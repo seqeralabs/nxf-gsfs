@@ -46,6 +46,10 @@ class GsFilesTest extends Specification implements StorageHelper {
         System.setProperty('GOOGLE_PROJECT_ID', projectId)
     }
 
+    def cleanupSpec() {
+        System.getProperties().remove('GOOGLE_APPLICATION_CREDENTIALS')
+        System.getProperties().remove('GOOGLE_PROJECT_ID')
+    }
 
     def 'should write a file' () {
         given:
@@ -100,7 +104,7 @@ class GsFilesTest extends Specification implements StorageHelper {
         attrs.size() == 12
         !attrs.isSymbolicLink()
         !attrs.isOther()
-        attrs.fileKey() == keyName
+        attrs.fileKey() == "/$keyName"
         attrs.lastAccessTime() == null
         attrs.lastModifiedTime().toMillis()-start < 5_000
         attrs.creationTime().toMillis()-start < 5_000
@@ -132,7 +136,7 @@ class GsFilesTest extends Specification implements StorageHelper {
         attrs.size() == 0
         !attrs.isSymbolicLink()
         !attrs.isOther()
-        attrs.fileKey() == "$bucketName/data/"
+        attrs.fileKey() == "/$bucketName/data/"
         attrs.lastAccessTime() == null
         attrs.lastModifiedTime() == null
         attrs.creationTime() == null
@@ -148,7 +152,7 @@ class GsFilesTest extends Specification implements StorageHelper {
         attrs.size() == 0
         !attrs.isSymbolicLink()
         !attrs.isOther()
-        attrs.fileKey() == bucketName
+        attrs.fileKey() == "/$bucketName"
         attrs.creationTime().toMillis()-start < 5_000
         attrs.lastAccessTime() == null
         attrs.lastModifiedTime() == null
@@ -878,6 +882,26 @@ class GsFilesTest extends Specification implements StorageHelper {
 
         cleanup:
         deleteBucket(bucketName)
+    }
+
+    @Ignore
+    def 'download big file' () {
+
+        given:
+        def temp = Files.createTempDirectory('test').resolve('big.bam')
+        def url = 'gs://isb-cgc-open/ccle/BLCA/RNA-Seq/G20466.5637.2.bam'
+        def path = Paths.get(new URI(url))
+
+        when:
+        def ts = System.currentTimeSeconds()
+        Files.copy(path, temp)
+        println "${System.currentTimeSeconds() - ts} secs"
+        then:
+        Files.exists(temp)
+
+        cleanup:
+        Files.delete(temp)
+
     }
 
 }

@@ -2,6 +2,7 @@ package nextflow.file.gs
 
 import java.nio.file.FileSystemAlreadyExistsException
 
+import com.google.cloud.storage.BucketInfo
 import com.google.cloud.storage.Storage
 import spock.lang.Specification
 import spock.lang.Unroll
@@ -138,5 +139,35 @@ class GsFileSystemProviderTest extends Specification {
         1 * provider.createDefaultStorage() >> storage
         path3.getFileSystem().provider() == provider
         path3.toString() == '/another-bucket/x/y'
+    }
+
+    def 'should create directory' () {
+
+        given:
+        def storage = Mock(Storage)
+        and:
+        def credentials = new File('my-credentials.keys')
+        def config = [location: location, storageClass: storageClass, credentials: credentials, projectId: projectId]
+        def provider = Spy(GsFileSystemProvider)
+
+        when:
+        def fs= provider.newFileSystem0(bucket, config)
+        then:
+        1 * provider.createStorage(credentials, projectId) >> storage
+        1 * provider.createFileSystem(_, bucket, config)
+        fs.location == location
+        fs.storageClass == storageClass
+
+        when:
+        fs.createDirectory(new GsPath(fs, "/$bucket"))
+        then:
+        1 * storage.create({ BucketInfo it ->
+            it.location == location
+            it.storageClass == storageClass }, _)
+
+        where:
+        bucket      | location  | storageClass  | projectId
+        'foo'       | 'eu'      | 'nearline'    | 'x-1'
+        'bar'       | 'us'      | 'coldline'    | 'y-2'
     }
 }

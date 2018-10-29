@@ -15,7 +15,7 @@ import groovy.transform.CompileStatic
 import groovy.transform.EqualsAndHashCode
 import groovy.transform.PackageScope
 /**
- * Model a Google Storage path
+ * Model a Google Cloud Storage path
  *
  * @author Paolo Di Tommaso <paolo.ditommaso@gmail.com>
  */
@@ -251,7 +251,7 @@ class GsPath implements Path {
         return this.toString() <=> other.toString()
     }
 
-    String getBucketName() {
+    String getBucket() {
         if( path.isAbsolute() ) {
             path.nameCount==0 ? '/' : path.getName(0)
         }
@@ -259,7 +259,7 @@ class GsPath implements Path {
             return null
     }
 
-    boolean isBucket() {
+    boolean isBucketRoot() {
         path.isAbsolute() && path.nameCount<2
     }
 
@@ -274,7 +274,7 @@ class GsPath implements Path {
     }
 
     BlobId getBlobId() {
-        path.isAbsolute() && path.nameCount>1 ? BlobId.of(bucketName,getObjectName()) : null
+        path.isAbsolute() && path.nameCount>1 ? BlobId.of(bucket,getObjectName()) : null
     }
 
     String toUriString() {
@@ -292,17 +292,5 @@ class GsPath implements Path {
         attributes = null
         return result
     }
-
-//    static GsPath get(String str)  {
-//        if( str == null )
-//            return null
-//
-//        def uri = new URI(null,null,str,null,null)
-//
-//        if( uri.scheme && GsFileSystemProvider.SCHEME != uri.scheme.toLowerCase())
-//            throw new ProviderMismatchException()
-//
-//        uri.authority ? (GsPath)Paths.get(uri) : new GsPath(null, str)
-//    }
 
 }

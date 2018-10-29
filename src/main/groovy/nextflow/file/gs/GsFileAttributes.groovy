@@ -10,7 +10,7 @@ import groovy.transform.CompileStatic
 import groovy.transform.EqualsAndHashCode
 import groovy.transform.ToString
 /**
- * Models file attributes for Google Cloud Storage
+ * Models file attributes for Google Cloud Storage object
  *
  * @author Paolo Di Tommaso <paolo.ditommaso@gmail.com>
  */
@@ -36,7 +36,7 @@ class GsFileAttributes implements BasicFileAttributes {
     GsFileAttributes() {}
 
     GsFileAttributes(Blob blob){
-        objectId = "${blob.getBucket()}/${blob.getName()}"
+        objectId = "/${blob.getBucket()}/${blob.getName()}".toString()
         creationTime = time(blob.getCreateTime())
         updateTime = time(blob.getUpdateTime())
         directory = blob.getName().endsWith('/')
@@ -44,7 +44,7 @@ class GsFileAttributes implements BasicFileAttributes {
     }
 
     protected GsFileAttributes(Bucket bucket) {
-        objectId = bucket.name
+        objectId = "/$bucket.name".toString()
         creationTime = time(bucket.getCreateTime())
         directory = true
     }

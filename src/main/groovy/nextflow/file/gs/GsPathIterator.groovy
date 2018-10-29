@@ -8,7 +8,7 @@ import com.google.cloud.storage.Blob
 import com.google.cloud.storage.Bucket
 import groovy.transform.CompileStatic
 /**
- * Implements a directory stream iterator
+ * Implements a directory stream iterator for the Google Cloud storage file system provider
  *
  * @see java.nio.file.DirectoryStream
  * @see GsFileSystem#newDirectoryStream(nextflow.file.gs.GsPath, java.nio.file.DirectoryStream.Filter)
@@ -26,9 +26,11 @@ abstract class GsPathIterator<T> implements Iterator<Path> {
 
     private GsPath next
 
+    private GsPath origin
 
-    GsPathIterator(GsFileSystem fs, Iterator<T> itr, Filter<? super Path> filter) {
-        this.fs = fs
+    GsPathIterator(GsPath origin, Iterator<T> itr, Filter<? super Path> filter) {
+        this.origin = origin
+        this.fs = origin.fileSystem
         this.itr = itr
         this.filter = filter
         advance()
@@ -39,15 +41,15 @@ abstract class GsPathIterator<T> implements Iterator<Path> {
     private void advance() {
 
         GsPath result = null
-        while(itr.hasNext() && result == null) {
+        while( result == null && itr.hasNext() ) {
             def item = itr.next()
             def path = createPath(fs, item)
-            if( filter ) {
+            if( path == origin )    // make sure to  skip the origin path
+                result = null
+            else if( filter )
                 result = filter.accept(path) ? path : null
-            }
-            else {
+            else
                 result = path
-            }
         }
 
         next = result
@@ -72,11 +74,14 @@ abstract class GsPathIterator<T> implements Iterator<Path> {
         throw new UnsupportedOperationException()
     }
 
+    /**
+     * Implements a path iterator for blob object i.e. files and path in a
+     * Google cloud storage file system
+     */
+    static class ForBlobs extends GsPathIterator<Blob> {
 
-    static class GsDirectoryIterator extends GsPathIterator<Blob> {
-
-        GsDirectoryIterator(GsFileSystem fs, Iterator<Blob> itr, Filter<? super Path> filter) {
-            super(fs, itr, filter)
+        ForBlobs(GsPath path, Iterator<Blob> itr, Filter<? super Path> filter) {
+            super(path, itr, filter)
         }
 
         @Override
@@ -85,10 +90,13 @@ abstract class GsPathIterator<T> implements Iterator<Path> {
         }
     }
 
-    static class GsBucketIterator extends GsPathIterator<Bucket> {
+    /**
+     * Implements an iterator for buckets in a Google Cloud storage file system
+     */
+    static class ForBuckets extends GsPathIterator<Bucket> {
 
-        GsBucketIterator(GsFileSystem fs, Iterator<Bucket> itr, Filter<? super Path> filter) {
-            super(fs, itr, filter)
+        ForBuckets(GsPath path, Iterator<Bucket> itr, Filter<? super Path> filter) {
+            super(path, itr, filter)
         }
 
         @Override
@@ -97,30 +105,4 @@ abstract class GsPathIterator<T> implements Iterator<Path> {
         }
     }
 
-
-    static DirectoryStream<Path> dirs(GsFileSystem fs, Iterator<Blob> itr, Filter<? super Path> filter ) {
-
-        return new DirectoryStream<Path>() {
-
-            @Override
-            Iterator<Path> iterator() {
-                return new GsDirectoryIterator(fs, itr, filter)
-            }
-
-            @Override void close() throws IOException { }
-        }
-    }
-
-    static DirectoryStream<Path> buckets(GsFileSystem fs, Iterator<Bucket> buckets, Filter<? super Path> filter ) {
-
-        return new DirectoryStream<Path>() {
-
-            @Override
-            Iterator<Path> iterator() {
-                return new GsBucketIterator(fs, buckets, filter)
-            }
-
-            @Override void close() throws IOException { }
-        }
-    }
 }

@@ -7,7 +7,7 @@ import com.google.cloud.storage.Blob
 import groovy.transform.CompileStatic
 
 /**
- * * Models file attributes view for a Google Cloud Storage
+ * * Models file attributes view for a Google Cloud Storage object
  *
  * @author Paolo Di Tommaso <paolo.ditommaso@gmail.com>
  */

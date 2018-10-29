@@ -34,6 +34,9 @@ import com.google.auth.oauth2.GoogleCredentials
 import com.google.cloud.storage.Storage
 import com.google.cloud.storage.StorageOptions
 import groovy.transform.CompileStatic
+import groovy.transform.Memoized
+import groovy.util.logging.Slf4j
+
 /**
  * JSR-203 file system provider implementation for Google Cloud Storage
  *
@@ -50,6 +53,7 @@ import groovy.transform.CompileStatic
  *
  * @author Paolo Di Tommaso <paolo.ditommaso@gmail.com>
  */
+@Slf4j
 @CompileStatic
 class GsFileSystemProvider extends FileSystemProvider {
 
@@ -86,21 +90,44 @@ class GsFileSystemProvider extends FileSystemProvider {
                 throw new IllegalArgumentException("Missing bucket name")
         }
 
-
         return uri.authority.toLowerCase()
     }
 
-    protected Storage createStorage(File credentials, String projectId) {
-        StorageOptions
-                .newBuilder()
-                .setCredentials(GoogleCredentials.fromStream(new FileInputStream(credentials)))
-                .setProjectId(projectId)
-                .build()
-                .getService()
+
+    protected Storage createStorage(credentials, projectId) {
+        createStorage0(credentials, projectId)
     }
 
     protected Storage createDefaultStorage() {
-        StorageOptions.getDefaultInstance().getService()
+        createStorage0(null, null)
+    }
+
+    private FileInputStream getFileStream( file )  {
+        assert file
+
+        if( file instanceof File )
+            return new FileInputStream(file)
+
+        if( file instanceof CharSequence )
+            return new FileInputStream(file.toString())
+
+        if( file instanceof Path )
+            return new FileInputStream(file.toFile())
+
+        throw new IllegalArgumentException("Not a valid file type: `$file` [${file.class.name}]")
+    }
+
+    @Memoized
+    Storage createStorage0( credentials, projectId ) {
+        log.debug "Creating Google storage -- projectId=$projectId; credentials=${credentials}"
+
+        def builder = StorageOptions .newBuilder()
+        if( credentials )
+            builder.setCredentials(GoogleCredentials.fromStream(getFileStream(credentials)))
+        if( projectId )
+            builder.setProjectId(projectId as String)
+
+        return builder.build() .getService()
     }
 
     /**
@@ -142,18 +169,31 @@ class GsFileSystemProvider extends FileSystemProvider {
      *          If the file system has already been created
      */
     @Override
-    synchronized GsFileSystem newFileSystem(URI uri, Map<String, ?> config) throws IOException {
+    GsFileSystem newFileSystem(URI uri, Map<String, ?> config) throws IOException {
         final bucket = getBucket(uri)
         newFileSystem0(bucket, config)
     }
 
+    /**
+     * Creates a new {@link GsFileSystem} for the given `bucket`.
+     *
+     * @param bucket The bucket name for which the file system will be created
+     * @param config
+     *          A {@link Map} object holding the file system configuration settings. Valid keys:
+     *          - credentials: path of the file
+     *          - projectId
+     *          - location
+     *          - storageClass
+     * @return
+     * @throws IOException
+     */
     synchronized GsFileSystem newFileSystem0(String bucket, Map<String, ?> config) throws IOException {
 
         if( fileSystems.containsKey(bucket) )
             throw new FileSystemAlreadyExistsException("File system already exists for Google Storage bucket: `$bucket`")
 
-        def credentials = (File)config.get('credentials')
-        def projectId = (String)config.get('projectId')
+        def credentials = config.get('credentials')
+        def projectId = config.get('projectId')
         if( credentials && projectId ) {
             def storage = createStorage(credentials, projectId)
             def result = createFileSystem(storage, bucket, config)
@@ -178,7 +218,15 @@ class GsFileSystemProvider extends FileSystemProvider {
         return result
     }
 
-    private GsFileSystem createFileSystem(Storage storage, String bucket, Map<String,?> config) {
+    /**
+     * Creates a new {@link GsFileSystem} object.
+     *
+     * @param storage
+     * @param bucket
+     * @param config
+     * @return
+     */
+    protected GsFileSystem createFileSystem(Storage storage, String bucket, Map<String,?> config) {
 
         def result = new GsFileSystem(this, storage, bucket)
 
@@ -279,7 +327,7 @@ class GsFileSystemProvider extends FileSystemProvider {
     }
 
     /**
-     * Get a {@link GsPath} from an object path
+     * Get a {@link GsPath} from an object path string
      *
      * See https://cloud.google.com/storage/docs/gsutil/addlhelp/HowSubdirectoriesWork
      *
@@ -289,19 +337,25 @@ class GsFileSystemProvider extends FileSystemProvider {
     GsPath getPath(String path) {
         assert path
 
+        // -- special root bucket
         if( path == '/' ) {
             final fs = getFileSystem0('/',true)
             return new GsPath(fs, "/")
         }
-        else if( !path.startsWith('/') ) {
-            int p = path.indexOf('/')
-            final bucket = p==-1 ? path : path.substring(0,p)
-            final fs = getFileSystem0(bucket,true)
-            new GsPath(fs, "/$path")
-        }
-        else
-            throw new IllegalArgumentException("Google storage path cannot start with a `/` character")
 
+        // -- remove first slash, if any
+        while( path.startsWith("/") )
+            path = path.substring(1)
+
+        // -- find the first component ie. the bucket name
+        int p = path.indexOf('/')
+        final bucket = p==-1 ? path : path.substring(0,p)
+
+        // -- get the file system
+        final fs = getFileSystem0(bucket,true)
+
+        // create a new path
+        new GsPath(fs, "/$path")
     }
 
     static private FileSystemProvider provider( Path path ) {
